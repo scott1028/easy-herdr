@@ -69,9 +69,9 @@ fn server_restores_while_git_metadata_is_blocked() {
         let runtime_dir = base.join("runtime");
         let socket_path = runtime_dir.join("herdr.sock");
         let data_dir = config_home.join(if cfg!(debug_assertions) {
-            "herdr-dev"
+            "easy-herdr-dev"
         } else {
-            "herdr"
+            "easy-herdr"
         });
         let repo = base.join("repo");
         fs::create_dir_all(repo.join(".git/objects")).unwrap();
@@ -127,7 +127,7 @@ fn server_restores_while_git_metadata_is_blocked() {
         fs::write(data_dir.join("config.toml"),
             "onboarding = false\n[terminal]\ndefault_shell = \"/bin/sh\"\n[ui.sidebar.spaces]\nrows = [[\"workspace\"]]\n").unwrap();
         support::register_runtime_dir(&runtime_dir);
-        let child = Command::new(env!("CARGO_BIN_EXE_herdr"))
+        let child = Command::new(env!("CARGO_BIN_EXE_easy-herdr"))
             .arg("server")
             .env("XDG_CONFIG_HOME", &config_home)
             .env("XDG_RUNTIME_DIR", &runtime_dir)

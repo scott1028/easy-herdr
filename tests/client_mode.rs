@@ -124,7 +124,7 @@ fn spawn_client_process_with_args_and_env(
         })
         .unwrap();
 
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_easy-herdr"));
     support::isolate_herdr_test_process(&mut cmd);
     cmd.args(args);
     cmd.env("HERDR_DISABLE_SOUND", "1");
@@ -185,7 +185,7 @@ fn spawn_server_with_config(
         })
         .unwrap();
 
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_easy-herdr"));
     support::isolate_herdr_test_process(&mut cmd);
     cmd.arg("server");
     cmd.env("XDG_CONFIG_HOME", config_home);
@@ -248,9 +248,9 @@ fn first_pane_id_in_workspace(socket_path: &PathBuf, workspace_id: &str) -> Stri
 
 fn app_dir_name() -> &'static str {
     if cfg!(debug_assertions) {
-        "herdr-dev"
+        "easy-herdr-dev"
     } else {
-        "herdr"
+        "easy-herdr"
     }
 }
 
@@ -414,9 +414,9 @@ fn client_sees_headless_startup_config_diagnostic() {
     let client_socket = runtime_dir.join("herdr-client.sock");
 
     let app_dir = if cfg!(debug_assertions) {
-        "herdr-dev"
+        "easy-herdr-dev"
     } else {
-        "herdr"
+        "easy-herdr"
     };
     fs::create_dir_all(config_home.join(app_dir)).unwrap();
     fs::write(
@@ -436,7 +436,7 @@ fn client_sees_headless_startup_config_diagnostic() {
         })
         .unwrap();
 
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_easy-herdr"));
     support::isolate_herdr_test_process(&mut cmd);
     cmd.arg("server");
     cmd.env("XDG_CONFIG_HOME", &config_home);
@@ -489,16 +489,16 @@ fn server_unreachable_shows_clear_error() {
     let runtime_dir = base.join("runtime");
     let api_socket = runtime_dir.join("herdr.sock");
 
-    fs::create_dir_all(config_home.join("herdr")).unwrap();
+    fs::create_dir_all(config_home.join("easy-herdr")).unwrap();
     fs::create_dir_all(&runtime_dir).unwrap();
     register_runtime_dir(&runtime_dir);
     fs::write(
-        config_home.join("herdr/config.toml"),
+        config_home.join("easy-herdr/config.toml"),
         "onboarding = false\n",
     )
     .unwrap();
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_herdr"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_easy-herdr"))
         .arg("client")
         .env("HERDR_DISABLE_SOUND", "1")
         .env("XDG_CONFIG_HOME", &config_home)
@@ -1042,7 +1042,7 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
     let bin = base.join("bin");
     fs::create_dir_all(&bin).unwrap();
     fs::create_dir_all(base.join("home")).unwrap();
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_herdr"), bin.join("herdr")).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_easy-herdr"), bin.join("herdr")).unwrap();
     let quote =
         |path: &std::path::Path| format!("'{}'", path.display().to_string().replace('\'', "'\\''"));
     let ssh_commands = base.join("ssh-commands");
@@ -2077,7 +2077,7 @@ fn client_receives_notify_on_agent_state_change() {
         })
         .unwrap();
 
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_easy-herdr"));
     support::isolate_herdr_test_process(&mut cmd);
     cmd.arg("server");
     cmd.env("XDG_CONFIG_HOME", &config_home);

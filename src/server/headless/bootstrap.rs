@@ -6,6 +6,8 @@ pub fn run_server() -> io::Result<()> {
     crate::platform::ignore_server_hangup();
     let args: Vec<String> = std::env::args().collect();
     let handoff_import = args.get(2).map(String::as_str) == Some("--handoff-import");
+    // `herdr switch` group servers keep no session and exit when unused.
+    let ephemeral = args.get(2).map(String::as_str) == Some(EPHEMERAL_SERVER_ARG);
     let process_context = crate::platform::prepare_server_process(handoff_import);
     init_logging();
     if let Some(warning) = launcher_warning {
@@ -62,14 +64,24 @@ pub fn run_server() -> io::Result<()> {
 
     let result = rt.block_on(async {
         // Create the App (with AppState, event channels, etc.).
+        let policy = if ephemeral {
+            app::AppPolicy::EPHEMERAL
+        } else {
+            app::AppPolicy::PRODUCTION
+        };
         let mut app = app::App::try_new(
             &loaded_config.config,
-            app::AppPolicy::PRODUCTION,
+            policy,
             config::config_diagnostic_summary(&loaded_config.diagnostics),
             api_rx,
             event_hub,
         )?;
-        seed_startup_workspace_if_empty(&mut app);
+        if ephemeral {
+            // Passthrough panes come from clients, not from the launch directory.
+            let _ = take_startup_cwd();
+        } else {
+            seed_startup_workspace_if_empty(&mut app);
+        }
 
         // Create the headless server.
         let mut server = match HeadlessServer::new(
@@ -88,9 +100,14 @@ pub fn run_server() -> io::Result<()> {
             Err(err) => return Err(err),
         };
 
+        if ephemeral {
+            server.ephemeral = Some(EphemeralLifecycle::default());
+        }
+
         info!(
             api_socket = %api::socket_path().display(),
             client_socket = %client_socket_path().display(),
+            ephemeral,
             "herdr server started"
         );
         print_ready_message(&api::socket_path(), &client_socket_path());

@@ -11,7 +11,7 @@ pub(super) const REMOTE_BRIDGE_CLOCK: libc::clockid_t = libc::CLOCK_BOOTTIME;
 
 use super::{
     read_limited_reader, ClipboardCommand, ClipboardImage, ForegroundJob, ForegroundProcess,
-    LimitedRead, Signal,
+    LimitedRead, Signal, TerminalWindowSpec, TERMINAL_OVERRIDE_ENV,
 };
 
 pub(crate) use super::unix_common::{
@@ -883,6 +883,69 @@ pub fn open_url(url: &str) -> std::io::Result<Option<std::process::Child>> {
         .map(Some)
 }
 
+fn terminal_window_command(
+    spec: &TerminalWindowSpec,
+    env: impl Fn(&str) -> Option<String>,
+) -> Vec<String> {
+    if let Some(prefix) = env(TERMINAL_OVERRIDE_ENV).filter(|prefix| !prefix.trim().is_empty()) {
+        return prefix
+            .split_whitespace()
+            .map(str::to_owned)
+            .chain(spec.argv.clone())
+            .collect();
+    }
+    let cwd = spec.cwd.display().to_string();
+    let prefix = [
+        (
+            "TERM_PROGRAM",
+            Some("ghostty"),
+            "ghostty --working-directory={cwd} -e",
+        ),
+        ("KONSOLE_VERSION", None, "konsole --workdir {cwd} -e"),
+        ("KITTY_WINDOW_ID", None, "kitty --directory {cwd}"),
+        ("WEZTERM_PANE", None, "wezterm start --cwd {cwd} --"),
+        (
+            "ALACRITTY_WINDOW_ID",
+            None,
+            "alacritty --working-directory {cwd} -e",
+        ),
+        (
+            "GNOME_TERMINAL_SCREEN",
+            None,
+            "gnome-terminal --working-directory={cwd} --",
+        ),
+        ("TERM", Some("foot"), "foot --working-directory={cwd}"),
+    ]
+    .into_iter()
+    .find(|(key, expected, _)| {
+        env(key).is_some_and(|value| expected.is_none_or(|expected| value == expected))
+    })
+    .map(|(_, _, prefix)| prefix)
+    .unwrap_or("x-terminal-emulator -e");
+    prefix
+        .split_whitespace()
+        .map(|arg| arg.replace("{cwd}", &cwd))
+        .chain(spec.argv.clone())
+        .collect()
+}
+
+pub(crate) fn open_terminal_window(spec: &TerminalWindowSpec) -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt as _;
+    let argv = terminal_window_command(spec, |key| std::env::var(key).ok());
+    let mut child = Command::new(&argv[0])
+        .args(&argv[1..])
+        .current_dir(&spec.cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 pub fn read_clipboard_image() -> Option<ClipboardImage> {
     if running_inside_wsl() {
         if let Some(image) = read_wsl_clipboard_image_with_command(|program| Command::new(program))
@@ -1241,6 +1304,53 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
     use std::{cell::RefCell, collections::HashMap};
+
+    #[test]
+    fn terminal_windows_follow_host_and_override() {
+        let spec = TerminalWindowSpec {
+            argv: vec!["herdr".into(), "switch".into()],
+            cwd: "/work dir".into(),
+        };
+        for (key, value, expected) in [
+            (
+                "TERM_PROGRAM",
+                "ghostty",
+                "ghostty|--working-directory=/work dir|-e",
+            ),
+            ("KONSOLE_VERSION", "1", "konsole|--workdir|/work dir|-e"),
+            ("KITTY_WINDOW_ID", "1", "kitty|--directory|/work dir"),
+            ("WEZTERM_PANE", "1", "wezterm|start|--cwd|/work dir|--"),
+            (
+                "ALACRITTY_WINDOW_ID",
+                "1",
+                "alacritty|--working-directory|/work dir|-e",
+            ),
+            (
+                "GNOME_TERMINAL_SCREEN",
+                "1",
+                "gnome-terminal|--working-directory=/work dir|--",
+            ),
+            ("TERM", "foot", "foot|--working-directory=/work dir"),
+            (TERMINAL_OVERRIDE_ENV, "custom --new", "custom|--new"),
+        ] {
+            assert_eq!(
+                terminal_window_command(&spec, |name| (name == key).then(|| value.into()))
+                    .join("|"),
+                format!("{expected}|herdr|switch")
+            );
+        }
+        assert_eq!(
+            terminal_window_command(&spec, |_| None),
+            ["x-terminal-emulator", "-e", "herdr", "switch"]
+        );
+        assert_eq!(
+            terminal_window_command(&spec, |key| match key {
+                "KONSOLE_VERSION" | "KITTY_WINDOW_ID" => Some("1".into()),
+                _ => None,
+            })[0],
+            "konsole"
+        );
+    }
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

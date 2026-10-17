@@ -19,6 +19,7 @@ mod creation;
 mod custom_commands;
 mod git_refresh;
 mod ids;
+pub(crate) mod passthrough;
 mod popup;
 mod runtime;
 mod session;
@@ -27,6 +28,8 @@ mod tab_bar_status;
 mod terminal_targets;
 mod terminal_titles;
 mod theme_sync;
+#[cfg(test)]
+mod update_policy_tests;
 mod window_title;
 mod worktrees;
 
@@ -83,6 +86,14 @@ impl AppPolicy {
         persist_session: true,
         persist_plugin_registry: true,
         background_updates: true,
+    };
+
+    /// `herdr switch` group servers: no saved session, no update checks.
+    pub(crate) const EPHEMERAL: Self = Self {
+        restore_session: false,
+        persist_session: false,
+        persist_plugin_registry: false,
+        background_updates: false,
     };
 
     #[cfg(test)]
@@ -466,10 +477,12 @@ impl App {
             "using pane scrollback configuration"
         );
 
+        let update_version_check_enabled =
+            env!("CARGO_BIN_NAME") != "easy-herdr" && config.update.version_check;
         let latest_release_notes = crate::release_notes::load_latest();
         let update_available = latest_release_notes
             .as_ref()
-            .filter(|notes| notes.preview)
+            .filter(|notes| notes.preview && update_version_check_enabled)
             .map(|notes| notes.version.clone());
         let latest_release_notes_available = latest_release_notes.is_some();
         let update_install_command = crate::update::update_install_command().to_string();
@@ -582,8 +595,10 @@ impl App {
         // Background auto-update is disabled for non-persistent test apps
         // and in debug/test builds so local development never mutates the
         // running binary out from under spawned test processes.
-        let version_check_enabled =
-            background_update_check_enabled(policy.background_updates, config.update.version_check);
+        let version_check_enabled = background_update_check_enabled(
+            policy.background_updates,
+            update_version_check_enabled,
+        );
         let manifest_check_enabled = background_update_check_enabled(
             policy.background_updates,
             config.update.manifest_check,
@@ -646,7 +661,7 @@ impl App {
                 .then_some(Instant::now() + AUTO_UPDATE_CHECK_INTERVAL),
             next_agent_manifest_update_check: manifest_check_enabled
                 .then_some(Instant::now() + AUTO_UPDATE_CHECK_INTERVAL),
-            update_version_check_enabled: config.update.version_check,
+            update_version_check_enabled,
             update_manifest_check_enabled: config.update.manifest_check,
             loaded_host_cursor: config.ui.host_cursor,
             agent_metadata_deadline: None,
@@ -971,7 +986,8 @@ impl App {
             let now = Instant::now();
             let previous_version_check_enabled = self.update_version_check_enabled;
             let previous_manifest_check_enabled = self.update_manifest_check_enabled;
-            self.update_version_check_enabled = config.update.version_check;
+            self.update_version_check_enabled =
+                env!("CARGO_BIN_NAME") != "easy-herdr" && config.update.version_check;
             self.update_manifest_check_enabled = config.update.manifest_check;
 
             if !self.update_version_check_enabled {
@@ -1562,7 +1578,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_restores_preview_update_available_from_saved_notes() {
+    fn startup_keeps_saved_notes_without_an_update_notice() {
         let _guard = config_env_lock().lock().unwrap();
         let path = temp_config_path("startup-preview-update-available");
         std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
@@ -1572,7 +1588,7 @@ mod tests {
 
         let app = test_app();
 
-        assert_eq!(app.state.update_available.as_deref(), Some("99.99.99"));
+        assert_eq!(app.state.update_available, None);
         assert!(app.state.latest_release_notes_available);
         assert_eq!(
             app.state

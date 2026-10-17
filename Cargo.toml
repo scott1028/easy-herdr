@@ -20,6 +20,10 @@ include = [
     "Cargo.toml",
 ]
 
+[[bin]]
+name = "easy-herdr"
+path = "src/main.rs"
+
 [workspace]
 members = ["crates/ghostty-vt"]
 default-members = [".", "crates/ghostty-vt"]

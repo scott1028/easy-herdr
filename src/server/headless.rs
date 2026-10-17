@@ -80,6 +80,7 @@ mod endpoint_requests;
 mod lifecycle;
 mod native_graphics;
 mod notifications;
+mod passthrough;
 mod render;
 mod retained_surface;
 mod surface_interest;
@@ -90,9 +91,16 @@ mod surface_interest;
 const EXTERNAL_EVENT_DRAIN_LIMIT: usize = 64;
 
 pub use bootstrap::run_server;
+use passthrough::EphemeralLifecycle;
+#[cfg(all(test, unix))]
+use passthrough::EPHEMERAL_IDLE_EXIT;
+pub(crate) use passthrough::EPHEMERAL_SERVER_ARG;
+// Only the Unix passthrough client reads it.
 use lifecycle::wait_for_live_handoff_response_write;
 #[cfg(unix)]
 use lifecycle::wait_for_old_public_sockets_to_close;
+#[cfg(unix)]
+pub(crate) use passthrough::PASSTHROUGH_SPAWN_FAILED;
 
 use crate::protocol::MAX_GRAPHICS_FRAME_SIZE;
 
@@ -230,6 +238,8 @@ pub struct HeadlessServer {
     server_config_diagnostic_without_keybindings: Option<String>,
     /// Writable direct attach owner per terminal id string.
     terminal_attach_owners: HashMap<String, u64>,
+    /// Set for `herdr switch` group servers, which exit when unused.
+    ephemeral: Option<EphemeralLifecycle>,
     /// Deferred application-history reads currently driving alternate-screen viewports.
     pending_alt_screen_reads: Vec<crate::server::alt_screen_read::PendingAltScreenRead>,
     /// Reads waiting for an alternate-screen traversal of the same terminal to finish.
@@ -380,6 +390,7 @@ impl HeadlessServer {
             server_config_diagnostic,
             server_config_diagnostic_without_keybindings,
             terminal_attach_owners: HashMap::new(),
+            ephemeral: None,
             pending_alt_screen_reads: Vec::new(),
             deferred_alt_screen_reads: Vec::new(),
             next_activity_stamp: 1,
@@ -522,7 +533,13 @@ impl HeadlessServer {
                 needs_graphics_render = false;
             }
 
-            if latest_shell_client(&self.clients).is_some() && self.app.ensure_default_workspace() {
+            if self.ephemeral_idle_expired(now) {
+                info!("ephemeral server unused; shutting down");
+                self.app.state.should_quit = true;
+                continue;
+            }
+
+            if latest_shell_client(&self.clients).is_some() && self.ensure_default_workspace() {
                 needs_render = true;
                 needs_full_render = true;
                 needs_graphics_render = false;
@@ -969,14 +986,20 @@ impl HeadlessServer {
             let held_inputs = removed.drain_shell_held_inputs();
             self.release_client_shell_inputs(client_id, held_inputs);
             crate::server::clipboard_image::remove_files(removed.staged_clipboard_files);
-            if let ClientConnectionMode::TerminalAttach { terminal_id } = removed.mode {
-                self.terminal_attach_owners.remove(&terminal_id);
-                if let Some(terminal_id) = self.terminal_id_by_string(&terminal_id) {
-                    self.app
-                        .state
-                        .direct_attach_resize_locks
-                        .remove(&terminal_id);
+            match removed.mode {
+                ClientConnectionMode::TerminalAttach { terminal_id } => {
+                    self.terminal_attach_owners.remove(&terminal_id);
+                    if let Some(terminal_id) = self.terminal_id_by_string(&terminal_id) {
+                        self.app
+                            .state
+                            .direct_attach_resize_locks
+                            .remove(&terminal_id);
+                    }
                 }
+                ClientConnectionMode::TerminalPassthrough { terminal_id } => {
+                    self.release_passthrough_terminal(&terminal_id);
+                }
+                _ => {}
             }
         }
         if should_release_focus {
@@ -1785,6 +1808,18 @@ impl HeadlessServer {
         }
 
         if let Some(existing_owner) = self.terminal_attach_owners.get(&terminal_id).copied() {
+            if self.client_owns_passthrough(existing_owner) {
+                self.send_to_client(
+                    client_id,
+                    ServerMessage::ServerShutdown {
+                        reason: Some(format!(
+                            "terminal attach failed: terminal {terminal_id} belongs to a passthrough client"
+                        )),
+                    },
+                );
+                self.remove_client_and_resize_if_needed(client_id);
+                return false;
+            }
             if existing_owner != client_id && !takeover {
                 self.send_to_client(
                     client_id,
@@ -1935,7 +1970,7 @@ impl HeadlessServer {
                     render_encoding = ?protocol::RenderEncoding::SemanticFrame,
                     "client connected"
                 );
-                self.app.ensure_default_workspace();
+                self.ensure_default_workspace();
                 let first_app_client = self.app_client_count() == 0;
                 let last_activity = self.allocate_activity_stamp();
                 let observed = crate::kitty_graphics::HostCellSize {
@@ -2060,6 +2095,9 @@ impl HeadlessServer {
                 target,
                 takeover,
             } => self.control_terminal_client(client_id, target, takeover),
+            ServerEvent::ClientSpawnPassthrough { client_id, spawn } => {
+                self.spawn_passthrough_client(client_id, spawn)
+            }
             ServerEvent::ClientAttachScroll {
                 client_id,
                 source,
@@ -2091,7 +2129,9 @@ impl HeadlessServer {
                     return false;
                 }
                 let Some(ClientConnection {
-                    mode: ClientConnectionMode::TerminalAttach { terminal_id },
+                    mode:
+                        ClientConnectionMode::TerminalAttach { terminal_id }
+                        | ClientConnectionMode::TerminalPassthrough { terminal_id },
                     ..
                 }) = self.clients.get(&client_id)
                 else {
@@ -2185,7 +2225,9 @@ impl HeadlessServer {
                 };
                 let pixel_mouse = pixel_mouse && observed.is_known();
                 let direct_terminal_id = if let Some(ClientConnection {
-                    mode: ClientConnectionMode::TerminalAttach { terminal_id },
+                    mode:
+                        ClientConnectionMode::TerminalAttach { terminal_id }
+                        | ClientConnectionMode::TerminalPassthrough { terminal_id },
                     terminal_size,
                     cell_size,
                     pixel_mouse: client_pixel_mouse,
@@ -2929,7 +2971,14 @@ impl HeadlessServer {
 
         let metadata_expired = self.app.expire_due_metadata(Instant::now());
         if let api::schema::Method::ServerLiveHandoff(params) = &msg.request.method {
-            let handoff_result = self.perform_live_handoff(params.clone());
+            let handoff_result = if self.ephemeral.is_some() {
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "herdr switch servers do not support live handoff",
+                ))
+            } else {
+                self.perform_live_handoff(params.clone())
+            };
             let handoff_succeeded = handoff_result.is_ok();
             let response = match handoff_result {
                 Ok(()) => serde_json::to_string(&api::schema::SuccessResponse {
@@ -3263,7 +3312,7 @@ impl HeadlessServer {
         }
 
         if !skip_default_workspace && latest_shell_client(&self.clients).is_some() {
-            changed |= self.app.ensure_default_workspace();
+            changed |= self.ensure_default_workspace();
         }
 
         changed

@@ -104,11 +104,11 @@ fn spawn_server(
     api_socket_path: &Path,
     _client_socket_path: &Path,
 ) -> SpawnedHerdr {
-    fs::create_dir_all(config_home.join("herdr")).unwrap();
+    fs::create_dir_all(config_home.join("easy-herdr")).unwrap();
     fs::create_dir_all(runtime_dir).unwrap();
     register_runtime_dir(runtime_dir);
     fs::write(
-        config_home.join("herdr/config.toml"),
+        config_home.join("easy-herdr/config.toml"),
         "onboarding = false\n",
     )
     .unwrap();
@@ -122,7 +122,7 @@ fn spawn_server(
         })
         .unwrap();
 
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_easy-herdr"));
     support::isolate_herdr_test_process(&mut cmd);
     cmd.arg("server");
     cmd.env("XDG_CONFIG_HOME", config_home);
@@ -356,7 +356,7 @@ fn duplicate_server_start_fails_gracefully() {
         })
         .unwrap();
 
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_easy-herdr"));
     support::isolate_herdr_test_process(&mut cmd);
     cmd.arg("server");
     cmd.env("XDG_CONFIG_HOME", &config_home);
@@ -540,9 +540,9 @@ fn no_hello_client_closed_within_five_seconds() {
 
 fn server_log_path(config_home: &Path) -> PathBuf {
     let app_dir_name = if cfg!(debug_assertions) {
-        "herdr-dev"
+        "easy-herdr-dev"
     } else {
-        "herdr"
+        "easy-herdr"
     };
     config_home.join(app_dir_name).join("herdr-server.log")
 }

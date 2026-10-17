@@ -481,6 +481,11 @@ pub fn validate_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Selects a named session for this process, as `--session <name>` would.
+pub(crate) fn select_session_for_process(name: &str) -> Result<(), String> {
+    apply_explicit_name(name)
+}
+
 fn apply_explicit_name(name: &str) -> Result<(), String> {
     let session = normalize_name(name)?;
     if let Some(session) = session {

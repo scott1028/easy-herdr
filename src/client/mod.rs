@@ -31,6 +31,8 @@ mod image_files;
 mod input;
 mod loop_config;
 mod notifications;
+#[cfg(unix)]
+mod passthrough;
 mod shell;
 mod shell_runtime;
 mod startup;
@@ -55,8 +57,12 @@ use state::ClientState;
 use state::RetiredDirectGraphicsMatch;
 use transport::*;
 
+#[cfg(unix)]
+pub(crate) use passthrough::run_passthrough;
 #[cfg(test)]
 pub(crate) use shell::{ClientShellConfig, ClientShellState};
+#[cfg(windows)]
+pub(crate) use startup::run_passthrough;
 pub use startup::{run_client, run_terminal_attach};
 pub use terminal_sessions::{run_terminal_session_control, run_terminal_session_observe};
 

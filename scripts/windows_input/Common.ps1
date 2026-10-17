@@ -45,7 +45,7 @@ function New-GauntletProcess($Exe, $Arguments, $Plan, [switch] $Capture) {
             # Enable the mapper's client-event trace so a report can distinguish a
             # terminal-issued paste from a bridge reaction (see README, #4314).
             $info.Environment['HERDR_WINDOWS_INPUT_TRACE'] = '1'
-            $info.Environment['HERDR_LOG'] = 'herdr=info'
+            $info.Environment['HERDR_LOG'] = 'herdr=info,easy_herdr=info'
         }
         if ($Plan.path -eq 'herdr-remote') {
             $info.Environment['HERDR_REMOTE_KEYBINDINGS'] = 'local'

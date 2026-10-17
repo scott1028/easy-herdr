@@ -14,6 +14,7 @@ pub(crate) enum ClientConnectionMode {
     TerminalPending,
     TerminalAttach { terminal_id: String },
     TerminalObserve { terminal_id: String },
+    TerminalPassthrough { terminal_id: String },
 }
 
 pub(crate) type RenderTarget = (

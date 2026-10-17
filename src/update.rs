@@ -2107,6 +2107,9 @@ fn homebrew_cellar_keg_root(path: &Path) -> Option<PathBuf> {
 
 /// Manual self-update command (`herdr update`).
 pub fn self_update(options: SelfUpdateOptions) -> Result<Version, String> {
+    if env!("CARGO_BIN_NAME") == "easy-herdr" {
+        return Err(crate::SELF_UPDATE_NOTICE.into());
+    }
     let channel = UpdateChannel::configured();
 
     if is_homebrew_managed_install() {

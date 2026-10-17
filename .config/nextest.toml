@@ -1,0 +1,3 @@
+# Fail and name a hung test instead of letting CI hit its job timeout.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 3 }

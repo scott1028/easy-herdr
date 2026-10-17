@@ -2,7 +2,7 @@
 
 
 <p align="center">
-  <img src="assets/logo.png" alt="herdr" width="100" />
+  <img src="assets/herdr.svg" alt="Herdr ram mascot icon" width="100" />
 </p>
 
 <p align="center">
@@ -23,6 +23,10 @@
 </p>
 
 ---
+
+<p align="center">
+  <img src="assets/mascot.png" alt="Herdr's blushing, stubborn ram mascot" width="960" />
+</p>
 
 https://github.com/user-attachments/assets/043ec09f-4bdd-41d5-aee0-8fda6b83e267
 

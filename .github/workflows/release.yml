@@ -257,6 +257,8 @@ jobs:
             herdr-macos-x86_64/herdr-macos-x86_64
             herdr-macos-aarch64/herdr-macos-aarch64
             herdr-windows-x86_64.zip/herdr-windows-x86_64.zip
+            assets/mascot.png
+            assets/herdr.svg
           body_path: RELEASE_NOTES.md
 
   update-nix-package:

@@ -32,7 +32,7 @@ let
   ];
 in
 rustPlatform.buildRustPackage {
-  pname = "herdr";
+  pname = "easy-herdr";
   version = manifest.package.version;
 
   src = lib.fileset.toSource {
@@ -85,7 +85,7 @@ rustPlatform.buildRustPackage {
     description = "Terminal workspace manager for AI coding agents";
     homepage = "https://herdr.dev";
     license = lib.licenses.asl20;
-    mainProgram = "herdr";
+    mainProgram = "easy-herdr";
     platforms = lib.platforms.linux ++ lib.platforms.darwin;
   };
 }

@@ -102,6 +102,9 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         return Ok(CommandOutcome::NotCli);
     };
 
+    if command == "channel" {
+        return Ok(CommandOutcome::Handled(run_channel_command(&args[2..])?));
+    }
     if spec::print_requested_help(args)? {
         return Ok(CommandOutcome::Handled(0));
     }
@@ -124,7 +127,6 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "status" => status::run_status_command(&args[2..])?,
         "completion" | "completions" => completion::run_completion_command(&args[2..])?,
         "config" => run_config_command(&args[2..])?,
-        "channel" => run_channel_command(&args[2..])?,
         "machine" => machine::run_machine_command(&args[2..])?,
         "workspace" => workspace::run_workspace_command(&args[2..])?,
         "worktree" => worktree::run_worktree_command(&args[2..])?,
@@ -157,6 +159,10 @@ fn api_group(name: &str) -> Option<clap::Command> {
 }
 
 fn run_channel_command(args: &[String]) -> std::io::Result<i32> {
+    if env!("CARGO_BIN_NAME") == "easy-herdr" && !matches!(args, [command] if command == "show") {
+        eprintln!("{}", crate::SELF_UPDATE_NOTICE);
+        return Ok(1);
+    }
     match args.first().map(|arg| arg.as_str()) {
         Some("set") => channel_set(&args[1..]),
         Some("show") if args.len() == 1 => {
@@ -777,6 +783,11 @@ pub(super) fn send_ok_request(method: Method) -> std::io::Result<i32> {
 pub(super) fn send_request(request: &Request) -> std::io::Result<serde_json::Value> {
     let client = target::api_client()?;
     ensure_server_protocol_compatible(&client, &request.id)?;
+    if !target::is_remote() {
+        if let Some(response) = crate::switch::cli_window::intercept(request, &client)? {
+            return Ok(response);
+        }
+    }
     client
         .request_value(request)
         .map_err(|err| map_server_not_running_or_io(err, &request.id, &client))

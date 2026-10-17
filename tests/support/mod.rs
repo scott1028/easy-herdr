@@ -778,7 +778,7 @@ fn is_test_herdr_binary(path: &Path) -> bool {
     // custom target directories; binary identity alone never grants ownership.
     static TEST_BINARY: OnceLock<Option<PathBuf>> = OnceLock::new();
     TEST_BINARY
-        .get_or_init(|| fs::canonicalize(env!("CARGO_BIN_EXE_herdr")).ok())
+        .get_or_init(|| fs::canonicalize(env!("CARGO_BIN_EXE_easy-herdr")).ok())
         .as_deref()
         .is_some_and(|binary| path == binary)
 }
@@ -919,7 +919,7 @@ mod tests {
 
     #[test]
     fn test_binary_matcher_accepts_cargo_test_binary() {
-        let binary = std::fs::canonicalize(env!("CARGO_BIN_EXE_herdr"))
+        let binary = std::fs::canonicalize(env!("CARGO_BIN_EXE_easy-herdr"))
             .expect("Cargo-built binary must exist");
         assert!(
             is_test_herdr_binary(&binary),
@@ -930,7 +930,7 @@ mod tests {
     #[test]
     fn test_binary_matcher_rejects_other_binaries() {
         let nested_build = Path::new(env!("CARGO_MANIFEST_DIR")).join("other/target/debug/herdr");
-        let sibling_build = Path::new(env!("CARGO_BIN_EXE_herdr"))
+        let sibling_build = Path::new(env!("CARGO_BIN_EXE_easy-herdr"))
             .parent()
             .unwrap()
             .join("other-build/herdr");

@@ -127,6 +127,18 @@ pub(crate) struct ClientWriter {
 }
 
 impl ClientWriter {
+    /// Raw PTY output channel for a passthrough client.
+    pub(crate) fn passthrough_sink(&self) -> ClientPassthroughSink {
+        ClientPassthroughSink {
+            queue: self.control.queue.clone(),
+        }
+    }
+
+    /// Called by the writer thread with the payload bytes still queued after each write.
+    pub(crate) fn set_passthrough_drained(&self, drained: PassthroughDrained) {
+        self.control.queue.lock_state().passthrough_drained = Some(Arc::from(drained));
+    }
+
     /// Drops render-lane work that has not yet been claimed by the writer.
     pub(crate) fn discard_pending_render(&self) {
         self.render.queue.discard_pending_render();
@@ -178,6 +190,11 @@ impl ClientWriter {
             while let Some(item) = drain.recv() {
                 let sent = match item {
                     ClientWriteItem::Control(data) => control.send(data).is_ok(),
+                    ClientWriteItem::Passthrough { data, payload_len } => {
+                        let sent = control.send(data).is_ok();
+                        drain.complete_passthrough(payload_len);
+                        sent
+                    }
                     ClientWriteItem::Render(data) => render.send(data).is_ok(),
                 };
                 if !sent {
@@ -270,19 +287,74 @@ struct ClientWriterQueue {
     ready: Condvar,
 }
 
-#[derive(Debug, Default)]
+pub(crate) type PassthroughDrained = Box<dyn Fn(usize) + Send + Sync>;
+
+#[derive(Default)]
 struct ClientWriterQueueState {
     control: VecDeque<Vec<u8>>,
+    /// Framed passthrough messages with their raw payload length.
+    passthrough: VecDeque<(Vec<u8>, usize)>,
+    passthrough_queued: usize,
+    passthrough_drained: Option<Arc<dyn Fn(usize) + Send + Sync>>,
     ordered: VecDeque<Vec<u8>>,
     render: Option<Vec<u8>>,
     senders: usize,
     writer_alive: bool,
 }
 
+impl std::fmt::Debug for ClientWriterQueueState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientWriterQueueState")
+            .field("control", &self.control.len())
+            .field("passthrough", &self.passthrough.len())
+            .field("passthrough_queued", &self.passthrough_queued)
+            .field("ordered", &self.ordered.len())
+            .field("senders", &self.senders)
+            .field("writer_alive", &self.writer_alive)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ClientWriteItem {
     Control(Vec<u8>),
+    Passthrough { data: Vec<u8>, payload_len: usize },
     Render(Vec<u8>),
+}
+
+/// Server side of one passthrough client's raw output stream.
+pub(crate) struct ClientPassthroughSink {
+    queue: Arc<ClientWriterQueue>,
+}
+
+impl ClientPassthroughSink {
+    fn push(&self, message: &ServerMessage, payload_len: usize) -> Option<usize> {
+        let mut framed = Vec::new();
+        if let Err(err) = protocol::write_message(&mut framed, message) {
+            warn!(err = %err, "failed to frame passthrough message");
+            return self.queue.passthrough_queued();
+        }
+        self.queue.send_passthrough(framed, payload_len)
+    }
+}
+
+impl crate::pty::passthrough::PassthroughSink for ClientPassthroughSink {
+    fn push_output(&self, bytes: &[u8]) -> Option<usize> {
+        self.push(&protocol::passthrough::output_message(bytes), bytes.len())
+    }
+
+    fn queued_bytes(&self) -> Option<usize> {
+        self.queue.passthrough_queued()
+    }
+
+    fn push_exit(&self, code: i32) {
+        match protocol::passthrough::exit_message(code) {
+            Ok(message) => {
+                self.push(&message, 0);
+            }
+            Err(err) => warn!(err = %err, "failed to encode passthrough exit"),
+        }
+    }
 }
 
 impl ClientWriterQueue {
@@ -353,11 +425,42 @@ impl ClientWriterQueue {
         Ok(())
     }
 
+    fn send_passthrough(&self, data: Vec<u8>, payload_len: usize) -> Option<usize> {
+        let mut state = self.lock_state();
+        if !state.writer_alive {
+            return None;
+        }
+        state.passthrough_queued += payload_len;
+        state.passthrough.push_back((data, payload_len));
+        self.ready.notify_one();
+        Some(state.passthrough_queued)
+    }
+
+    fn passthrough_queued(&self) -> Option<usize> {
+        let state = self.lock_state();
+        state.writer_alive.then_some(state.passthrough_queued)
+    }
+
+    /// Runs on the writer thread after one passthrough message was written.
+    fn complete_passthrough(&self, payload_len: usize) {
+        let (queued, drained) = {
+            let mut state = self.lock_state();
+            state.passthrough_queued = state.passthrough_queued.saturating_sub(payload_len);
+            (state.passthrough_queued, state.passthrough_drained.clone())
+        };
+        if let Some(drained) = drained {
+            drained(queued);
+        }
+    }
+
     fn recv(&self) -> Option<ClientWriteItem> {
         let mut state = self.lock_state();
         loop {
             if let Some(data) = state.control.pop_front() {
                 return Some(ClientWriteItem::Control(data));
+            }
+            if let Some((data, payload_len)) = state.passthrough.pop_front() {
+                return Some(ClientWriteItem::Passthrough { data, payload_len });
             }
             if let Some(data) = state.ordered.pop_front() {
                 self.ready.notify_one();
@@ -381,6 +484,9 @@ impl ClientWriterQueue {
         state.writer_alive = false;
         state.render = None;
         state.ordered.clear();
+        state.passthrough.clear();
+        state.passthrough_queued = 0;
+        state.passthrough_drained = None;
         self.ready.notify_all();
     }
 
@@ -453,6 +559,11 @@ pub(crate) enum ServerEvent {
         client_id: u64,
         terminal_id: String,
         takeover: bool,
+    },
+    /// A client requested a new passthrough agent pane bound to its connection.
+    ClientSpawnPassthrough {
+        client_id: u64,
+        spawn: protocol::passthrough::PassthroughSpawnRequest,
     },
     /// A client requested read-only observation of one terminal.
     ClientObserveTerminal { client_id: u64, target: String },
@@ -957,6 +1068,11 @@ fn client_writer_loop(
     while let Some(item) = writer_queue.recv() {
         let written = match item {
             ClientWriteItem::Control(data) => write_framed_bytes(&mut stream, &data),
+            ClientWriteItem::Passthrough { data, payload_len } => {
+                let written = write_framed_bytes(&mut stream, &data);
+                writer_queue.complete_passthrough(payload_len);
+                written
+            }
             ClientWriteItem::Render(data) => {
                 let _ =
                     server_event_tx.blocking_send(ServerEvent::ClientWriterDrained { client_id });
@@ -1336,6 +1452,19 @@ fn client_read_loop_with_endpoint_controls(
                         code,
                         message,
                     },
+                }
+            }
+            ClientMessage::EndpointControl { kind, data }
+                if kind == protocol::passthrough::SPAWN_KIND =>
+            {
+                match protocol::passthrough::decode_spawn(&data) {
+                    Ok(spawn) => ServerEvent::ClientSpawnPassthrough { client_id, spawn },
+                    Err(err) => {
+                        debug!(client_id, err = %err, "invalid passthrough spawn request, closing");
+                        let _ = server_event_tx
+                            .blocking_send(ServerEvent::ClientDisconnected { client_id });
+                        break;
+                    }
                 }
             }
             ClientMessage::EndpointControl { kind, data }
@@ -2391,6 +2520,9 @@ mod tests {
             .expect("read thread join")
             .expect("read thread result");
     }
+
+    #[path = "passthrough_tdd.rs"]
+    mod passthrough_tdd;
 
     #[test]
     fn client_read_loop_uses_authoritative_shell_resize_surface() {

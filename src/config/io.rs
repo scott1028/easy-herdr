@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::{model::LoadedConfig, Config, CONFIG_PATH_ENV_VAR};
 
@@ -21,9 +21,9 @@ const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
 
 pub fn app_dir_name() -> &'static str {
     if cfg!(debug_assertions) {
-        "herdr-dev"
+        "easy-herdr-dev"
     } else {
-        "herdr"
+        "easy-herdr"
     }
 }
 
@@ -130,6 +130,7 @@ pub(super) fn read_optional_config(path: &Path) -> std::io::Result<Option<String
 impl Config {
     pub fn load() -> LoadedConfig {
         let path = config_path();
+        migrate_legacy_config(&path);
         let content = match read_optional_config(&path) {
             Ok(Some(content)) => content,
             Ok(None) => {
@@ -177,6 +178,40 @@ impl Config {
                     invalid_sections: Vec::new(),
                 }
             }
+        }
+    }
+}
+
+fn migrate_legacy_config(path: &Path) {
+    if std::env::var_os(CONFIG_PATH_ENV_VAR).is_some() || path.exists() {
+        return;
+    }
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    let legacy_name = if cfg!(debug_assertions) {
+        "herdr-dev"
+    } else {
+        "herdr"
+    };
+    let legacy_path = dir.with_file_name(legacy_name).join("config.toml");
+    if !legacy_path.is_file() {
+        return;
+    }
+    let copy = || -> std::io::Result<()> {
+        let mut source = std::fs::File::open(&legacy_path)?;
+        std::fs::create_dir_all(dir)?;
+        let mut destination = std::fs::File::create_new(path)?;
+        std::io::copy(&mut source, &mut destination)?;
+        Ok(())
+    };
+    match copy() {
+        Ok(()) => {
+            info!(from = %legacy_path.display(), to = %path.display(), "migrated legacy config")
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(err) => {
+            warn!(err = %err, from = %legacy_path.display(), to = %path.display(), "legacy config migration failed")
         }
     }
 }

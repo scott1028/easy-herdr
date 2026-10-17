@@ -202,16 +202,48 @@ fn validate_running_server_compatibility(saved_federation: bool) -> io::Result<(
 ///
 /// Returns the PID of the spawned server process.
 pub fn spawn_server_daemon() -> io::Result<u32> {
-    let exe = std::env::current_exe().map_err(|err| {
+    spawn_server_daemon_with_args(current_herdr_exe()?, &[])
+}
+
+/// Makes sure the active session runs a compatible server, starting an ephemeral
+/// `herdr switch` group server when none is listening.
+pub fn ensure_ephemeral_server() -> io::Result<()> {
+    let socket_path = client_socket_path();
+    if is_server_listening_at(&socket_path)? {
+        return validate_running_server_compatibility(false);
+    }
+    spawn_server_daemon_with_args(
+        ephemeral_server_exe(&current_herdr_exe()?)?,
+        &[crate::server::headless::EPHEMERAL_SERVER_ARG],
+    )?;
+    wait_for_server_socket(&socket_path, SERVER_READY_TIMEOUT)
+}
+
+/// The binary for a `herdr switch` group server. macOS can report a `herdr-switch`
+/// symlink as current_exe; under that name the daemon would start as `herdr switch`,
+/// and its panes would get that name as HERDR_BIN_PATH.
+fn ephemeral_server_exe(current_exe: &Path) -> io::Result<PathBuf> {
+    current_exe.canonicalize().map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("failed to resolve {}: {err}", current_exe.display()),
+        )
+    })
+}
+
+fn current_herdr_exe() -> io::Result<PathBuf> {
+    std::env::current_exe().map_err(|err| {
         io::Error::new(
             err.kind(),
             format!("failed to determine herdr executable path: {err}"),
         )
-    })?;
+    })
+}
 
+fn spawn_server_daemon_with_args(exe: PathBuf, server_args: &[&str]) -> io::Result<u32> {
     info!(exe = %exe.display(), "spawning server daemon");
 
-    let mut command = build_server_daemon_command(exe);
+    let mut command = build_server_daemon_command(exe, server_args);
 
     let pid =
         crate::platform::launch_server_daemon_command(&mut command).map_err(|err: io::Error| {
@@ -222,10 +254,11 @@ pub fn spawn_server_daemon() -> io::Result<u32> {
     Ok(pid)
 }
 
-fn build_server_daemon_command(exe: PathBuf) -> Command {
+fn build_server_daemon_command(exe: PathBuf, server_args: &[&str]) -> Command {
     let mut command = Command::new(&exe);
     command
         .arg("server")
+        .args(server_args)
         // Redirect stdio to /dev/null
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -408,6 +441,10 @@ mod windows_tests {
     }
 }
 
+#[cfg(test)]
+#[path = "autodetect_tdd.rs"]
+mod autodetect_tdd;
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -450,7 +487,7 @@ mod tests {
         ];
         crate::session::configure_from_args(&args).unwrap();
 
-        let command = build_server_daemon_command(PathBuf::from("/tmp/herdr-test"));
+        let command = build_server_daemon_command(PathBuf::from("/tmp/herdr-test"), &[]);
         let envs: Vec<_> = command.get_envs().collect();
 
         assert!(envs.iter().any(|(key, value)| {
@@ -468,7 +505,7 @@ mod tests {
     #[test]
     fn server_daemon_command_passes_current_dir_as_startup_cwd() {
         let expected = std::env::current_dir().unwrap();
-        let command = build_server_daemon_command(PathBuf::from("/tmp/herdr-test"));
+        let command = build_server_daemon_command(PathBuf::from("/tmp/herdr-test"), &[]);
         let envs: Vec<_> = command.get_envs().collect();
 
         assert!(envs.iter().any(|(key, value)| {

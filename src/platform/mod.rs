@@ -6,6 +6,13 @@
 #[cfg(unix)]
 pub(crate) mod ssh_agent;
 
+pub(crate) struct TerminalWindowSpec {
+    pub argv: Vec<String>,
+    pub cwd: std::path::PathBuf,
+}
+
+pub(crate) const TERMINAL_OVERRIDE_ENV: &str = "HERDR_SWITCH_TERMINAL";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 // Native adapters construct only the event classifications their OS can report.
 #[allow(dead_code)]

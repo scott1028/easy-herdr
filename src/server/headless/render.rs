@@ -134,8 +134,10 @@ impl HeadlessServer {
                             .is_some_and(crate::terminal::TerminalRuntime::sgr_pixel_mouse_enabled);
                     Some((client_id, child_requests_mouse, sgr_pixels))
                 }
+                // A passthrough program's own mouse modes reach the host terminal directly.
                 ClientConnectionMode::TerminalPending
-                | ClientConnectionMode::TerminalObserve { .. } => None,
+                | ClientConnectionMode::TerminalObserve { .. }
+                | ClientConnectionMode::TerminalPassthrough { .. } => None,
             })
             .collect::<Vec<_>>();
 
@@ -359,7 +361,9 @@ impl HeadlessServer {
                 | ClientConnectionMode::TerminalObserve { terminal_id } => {
                     direct_terminal_targets.insert(terminal_id.as_str());
                 }
-                ClientConnectionMode::TerminalPending => {}
+                // Passthrough clients get raw PTY bytes, not renders.
+                ClientConnectionMode::TerminalPending
+                | ClientConnectionMode::TerminalPassthrough { .. } => {}
             }
         }
         (has_app_target, direct_terminal_targets)
@@ -756,7 +760,8 @@ impl HeadlessServer {
                     ));
                     frame
                 }
-                ClientConnectionMode::TerminalPending => continue,
+                ClientConnectionMode::TerminalPending
+                | ClientConnectionMode::TerminalPassthrough { .. } => continue,
                 ClientConnectionMode::TerminalAttach { terminal_id }
                 | ClientConnectionMode::TerminalObserve { terminal_id } => {
                     let Some(runtime) = self.runtime_for_terminal_id_string(&terminal_id) else {

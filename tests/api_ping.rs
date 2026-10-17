@@ -122,11 +122,11 @@ fn spawn_herdr_with_options(
     path_override: Option<&Path>,
     shell: &str,
 ) -> SpawnedHerdr {
-    fs::create_dir_all(config_home.join("herdr")).unwrap();
+    fs::create_dir_all(config_home.join("easy-herdr")).unwrap();
     fs::create_dir_all(runtime_dir).unwrap();
     register_runtime_dir(runtime_dir);
     fs::write(
-        config_home.join("herdr/config.toml"),
+        config_home.join("easy-herdr/config.toml"),
         "onboarding = false\n",
     )
     .unwrap();
@@ -140,7 +140,7 @@ fn spawn_herdr_with_options(
         })
         .unwrap();
 
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_easy-herdr"));
     support::isolate_herdr_test_process(&mut cmd);
     cmd.arg("server");
     cmd.env("XDG_CONFIG_HOME", config_home);
@@ -344,9 +344,9 @@ fn spawned_server_ignores_inherited_pane_env() {
     );
     assert_eq!(value["result"]["workspaces"], serde_json::json!([]));
     let app_dir = if cfg!(debug_assertions) {
-        "herdr-dev"
+        "easy-herdr-dev"
     } else {
-        "herdr"
+        "easy-herdr"
     };
     assert!(!config_home.join(app_dir).join("sessions").exists());
 
@@ -364,7 +364,7 @@ fn server_reload_agent_manifests_reports_runtime_override() {
     let child = spawn_herdr(&config_home, &runtime_dir, &socket_path);
     wait_for_socket(&socket_path, Duration::from_secs(5));
 
-    let override_dir = config_home.join("herdr-dev").join("agent-detection");
+    let override_dir = config_home.join("easy-herdr-dev").join("agent-detection");
     fs::create_dir_all(&override_dir).unwrap();
     let override_path = override_dir.join("codex.toml");
     fs::write(
@@ -456,7 +456,7 @@ fn shutdown_preserves_session_after_shell_is_signaled() {
     child.child.wait().expect("server should stop cleanly");
 
     let session: serde_json::Value = serde_json::from_slice(
-        &fs::read(config_home.join("herdr-dev/session.json")).expect("saved session"),
+        &fs::read(config_home.join("easy-herdr-dev/session.json")).expect("saved session"),
     )
     .expect("valid session json");
     assert_eq!(session["workspaces"].as_array().map(Vec::len), Some(1));

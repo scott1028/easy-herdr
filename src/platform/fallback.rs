@@ -3,6 +3,10 @@ use std::process::Command;
 
 use super::{ClipboardImage, ForegroundJob, Signal};
 
+pub(crate) fn open_terminal_window(_spec: &super::TerminalWindowSpec) -> std::io::Result<()> {
+    Err(std::io::ErrorKind::Unsupported.into())
+}
+
 #[cfg(unix)]
 pub(crate) use super::unix_common::set_default_plugin_pane_pwd;
 

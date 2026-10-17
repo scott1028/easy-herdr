@@ -17,6 +17,10 @@ mod clipboard_image;
 mod config_backup;
 mod notifications;
 mod power;
+pub(crate) fn open_terminal_window(_spec: &super::TerminalWindowSpec) -> std::io::Result<()> {
+    Err(std::io::ErrorKind::Unsupported.into())
+}
+
 pub(crate) use notifications::{
     foreground_desktop_notification_host, maybe_activate_desktop_notification,
     show_actionable_desktop_notification, show_desktop_notification,

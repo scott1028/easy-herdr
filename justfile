@@ -90,33 +90,33 @@ build:
 
 # Non-gating full-render scaling profile for background workspaces and active panes
 bench-render-scale:
-    cargo test --release --locked --bin herdr render_scale_profile -- --ignored --nocapture --test-threads=1
+    cargo test --release --locked --bin easy-herdr render_scale_profile -- --ignored --nocapture --test-threads=1
 
 # Profile terminal target name resolution at increasing pane counts.
 bench-terminal-targets:
-    cargo test --release --locked --bin herdr terminal_target_lookup_profile -- --ignored --nocapture --test-threads=1
+    cargo test --release --locked --bin easy-herdr terminal_target_lookup_profile -- --ignored --nocapture --test-threads=1
 
 # Profile Windows foreground inspection of isolated idle shells, without a server.
 [windows]
 bench-process-inspection:
-    cargo test --release --locked --bin herdr windows_process_inspection_profile -- --ignored --nocapture --test-threads=1
+    cargo test --release --locked --bin easy-herdr windows_process_inspection_profile -- --ignored --nocapture --test-threads=1
 
 # Profile BSP split collection and construction with balanced and skewed trees.
 bench-bsp-layout:
-    cargo test --release --locked --bin herdr bsp_layout_profile -- --ignored --nocapture --test-threads=1
+    cargo test --release --locked --bin easy-herdr bsp_layout_profile -- --ignored --nocapture --test-threads=1
 
 # Profile full and retained text, static-image, and unchanged-image updates.
 bench-retained-graphics:
-    cargo test --release --locked --bin herdr render_scale_profile_retained_graphics -- --ignored --nocapture --test-threads=1
+    cargo test --release --locked --bin easy-herdr render_scale_profile_retained_graphics -- --ignored --nocapture --test-threads=1
 
 # Profile first-batch latency and aggregate drain cost for external API bursts.
 bench-api-fairness:
-    cargo test --release --locked --bin herdr external_api_burst_profile -- --ignored --nocapture --test-threads=1
+    cargo test --release --locked --bin easy-herdr external_api_burst_profile -- --ignored --nocapture --test-threads=1
 
 # ~3-5 minute CPU comparison; downloads stable unless HERDR_PERF_BASELINE_BIN is set
 bench-release-smoke:
     cargo build --release --locked
-    scripts/release_perf_smoke.sh "${CARGO_TARGET_DIR:-target}/release/herdr"
+    scripts/release_perf_smoke.sh "${CARGO_TARGET_DIR:-target}/release/easy-herdr"
 
 # Test public documentation snapshot and release lifecycle tooling
 docs-contract-test:

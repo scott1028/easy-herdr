@@ -139,7 +139,22 @@ fn apply_pane_terminal_env(cmd: &mut CommandBuilder) {
 pub(crate) struct PaneLaunchEnv {
     extra: Vec<(String, String)>,
     identity: PaneLaunchIdentity,
+    /// Replaces the inherited server environment, including TERM.
+    base_env: Option<Vec<(String, String)>>,
+    passthrough: Option<PassthroughHandle>,
 }
+
+/// Raw output owner of a pane, compared by identity.
+#[derive(Debug, Clone)]
+pub(crate) struct PassthroughHandle(pub(crate) Arc<crate::pty::passthrough::PtyPassthrough>);
+
+impl PartialEq for PassthroughHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for PassthroughHandle {}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 enum PaneLaunchIdentity {
@@ -157,8 +172,23 @@ impl PaneLaunchEnv {
     pub(crate) fn from_extra(extra: Vec<(String, String)>) -> Self {
         Self {
             extra,
-            identity: PaneLaunchIdentity::Inherit,
+            ..Self::default()
         }
+    }
+
+    /// Runs the program with exactly this environment plus Herdr pane variables.
+    pub(crate) fn with_base_env(mut self, env: Vec<(String, String)>) -> Self {
+        self.base_env = Some(env);
+        self
+    }
+
+    /// Streams raw PTY output to the owning passthrough client.
+    pub(crate) fn with_passthrough(
+        mut self,
+        passthrough: Arc<crate::pty::passthrough::PtyPassthrough>,
+    ) -> Self {
+        self.passthrough = Some(PassthroughHandle(passthrough));
+        self
     }
 
     pub(crate) fn with_identity(
@@ -182,8 +212,17 @@ impl PaneLaunchEnv {
 }
 
 fn apply_pane_launch_env(cmd: &mut CommandBuilder, launch_env: &PaneLaunchEnv) {
+    if let Some(base_env) = &launch_env.base_env {
+        cmd.env_clear();
+        for (key, value) in base_env {
+            cmd.env(key, value);
+        }
+    }
+    // A passthrough pane keeps its own terminal's SSH agent, as if run directly.
     #[cfg(unix)]
-    crate::platform::ssh_agent::apply_pane_env(cmd);
+    if launch_env.base_env.is_none() {
+        crate::platform::ssh_agent::apply_pane_env(cmd);
+    }
     // A new pane is not a child agent of the process that started the server.
     // Explicit launch env below can opt back into an intentional child session.
     for key in [
@@ -230,6 +269,7 @@ struct SpawnInitialState<'a> {
     detected_agent: Option<Agent>,
     history_ansi: Option<&'a str>,
     windows_powershell_prompt_cwd_reporting: bool,
+    passthrough: Option<&'a Arc<crate::pty::passthrough::PtyPassthrough>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2408,6 +2448,7 @@ impl PaneRuntime {
                 detected_agent: None,
                 history_ansi: initial_history_ansi,
                 windows_powershell_prompt_cwd_reporting,
+                passthrough: None,
             },
             AgentDetection::Enabled,
         )
@@ -2493,7 +2534,10 @@ impl PaneRuntime {
             render_dirty,
             cmd,
             "failed to spawn argv command pane",
-            SpawnInitialState::default(),
+            SpawnInitialState {
+                passthrough: launch_env.passthrough.as_ref().map(|handle| &handle.0),
+                ..SpawnInitialState::default()
+            },
             agent_detection,
         )
     }
@@ -2642,6 +2686,7 @@ impl PaneRuntime {
                 initially_quiesced: true,
                 on_read,
                 on_reader_exit: Some(on_reader_exit),
+                passthrough: None,
             })?)
         };
 
@@ -2739,24 +2784,29 @@ impl PaneRuntime {
             let child_wait_completed = child_wait_completed.clone();
             let events = events.clone();
             let rt = tokio::runtime::Handle::current();
+            let passthrough = initial_state.passthrough.cloned();
             let mut child = spawned.child;
             if let Some(pid) = child.process_id() {
                 child_pid.store(pid, Ordering::Release);
                 crate::logging::pane_spawned(pane_id.raw(), pid);
             }
             tokio::task::spawn_blocking(move || {
-                let exit_reason = match child.wait() {
+                // Signals map to 1, matching portable-pty's ExitStatus.
+                let (exit_reason, exit_code) = match child.wait() {
                     Ok(status) => {
                         let exit_reason = crate::platform::classify_child_exit(&status);
                         let status_text = format!("{status:?}");
                         crate::logging::pane_exited(pane_id.raw(), &status_text);
-                        exit_reason
+                        (exit_reason, i32::try_from(status.exit_code()).unwrap_or(1))
                     }
                     Err(e) => {
                         crate::logging::pane_exit_failed(pane_id.raw(), &e.to_string());
-                        crate::platform::ChildExitReason::WaitFailed
+                        (crate::platform::ChildExitReason::WaitFailed, 1)
                     }
                 };
+                if let Some(passthrough) = passthrough {
+                    passthrough.record_exit(exit_code);
+                }
                 child_wait_completed.store(true, Ordering::Release);
                 // Use blocking send — PaneDied is critical, must not be dropped
                 if let Err(e) = rt.block_on(events.send(AppEvent::PaneDied {
@@ -2781,6 +2831,8 @@ impl PaneRuntime {
             let reported_cwd = reported_cwd.clone();
             let compression_wake = compression.notifier();
             let rt = tokio::runtime::Handle::current();
+            // The host terminal of a passthrough client handles bells and OSC 52 itself.
+            let host_handles_effects = initial_state.passthrough.is_some();
             let on_read = Box::new(move |bytes: &[u8]| {
                 let _content_write_guard = match content_write_lock.lock() {
                     Ok(guard) => guard,
@@ -2793,7 +2845,9 @@ impl PaneRuntime {
                 content_seq.fetch_add(1, Ordering::Release);
                 drop(_content_write_guard);
                 compression_wake.wake();
-                publish_terminal_bells(pane_id, result.terminal_bells, &events);
+                if !host_handles_effects {
+                    publish_terminal_bells(pane_id, result.terminal_bells, &events);
+                }
                 if agent_detection == AgentDetection::Enabled {
                     observe_detection_content_change(bytes, &detection_content_seq);
                 }
@@ -2816,7 +2870,11 @@ impl PaneRuntime {
                 if let Some(cwd) = result.reported_cwd.clone() {
                     publish_reported_cwd(pane_id, cwd, &reported_cwd, &events);
                 }
-                for content in result.clipboard_writes {
+                for content in result
+                    .clipboard_writes
+                    .into_iter()
+                    .filter(|_| !host_handles_effects)
+                {
                     if let Err(err) = events.try_send(AppEvent::ClipboardWrite { content }) {
                         warn!(
                             pane = pane_id.raw(),
@@ -2838,6 +2896,8 @@ impl PaneRuntime {
                 initially_quiesced: false,
                 on_read,
                 on_reader_exit: None,
+                #[cfg(unix)]
+                passthrough: initial_state.passthrough.cloned(),
             })?)
         };
 
@@ -4090,6 +4150,11 @@ impl PaneRuntime {
         )
     }
 }
+
+// These tests run shell programs through a Unix PTY.
+#[cfg(all(test, unix))]
+#[path = "pane_passthrough_tdd.rs"]
+mod passthrough_tdd;
 
 #[cfg(test)]
 mod tests {

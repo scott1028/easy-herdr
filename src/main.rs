@@ -2,6 +2,7 @@ use std::io;
 
 pub(crate) const HERDR_ENV_VAR: &str = "HERDR_ENV";
 pub(crate) const HERDR_ENV_VALUE: &str = "1";
+const SELF_UPDATE_NOTICE: &str = "easy-herdr does not update itself. Download new builds from https://github.com/scott1028/herdr/releases";
 const NESTED_HERDR_MESSAGES: [&str; 6] = [
     "inception detected. we need to go deeper... said no one ever.",
     "recursion is a pathway to many abilities some consider to be... unnatural.",
@@ -26,6 +27,7 @@ mod events;
 use ghostty_vt as ghostty;
 mod handoff_runtime;
 mod input;
+mod install;
 mod integration;
 mod ipc;
 mod kitty_graphics;
@@ -53,6 +55,7 @@ mod selection;
 mod server;
 mod session;
 mod sound;
+mod switch;
 mod terminal;
 mod terminal_effects;
 mod terminal_modes;
@@ -513,10 +516,14 @@ fn main() -> io::Result<()> {
         Ok(args) => args,
         Err(err) => {
             eprintln!("error: {err}");
-            eprintln!("run 'herdr --help' for usage");
+            eprintln!("run 'easy-herdr --help' for usage");
             std::process::exit(2);
         }
     };
+    // Agent arguments must not reach Herdr's own option parsing.
+    if let Some(code) = switch::maybe_run(&raw_args) {
+        std::process::exit(code);
+    }
     #[cfg(windows)]
     if let Some(result) = platform::maybe_activate_desktop_notification(&raw_args) {
         return result;
@@ -528,7 +535,7 @@ fn main() -> io::Result<()> {
         Ok(args) => args,
         Err(err) => {
             eprintln!("error: {err}");
-            eprintln!("run 'herdr --help' for usage");
+            eprintln!("run 'easy-herdr --help' for usage");
             std::process::exit(2);
         }
     };
@@ -536,7 +543,7 @@ fn main() -> io::Result<()> {
         Ok(parsed) => parsed,
         Err(err) => {
             eprintln!("error: {err}");
-            eprintln!("run 'herdr --help' for usage");
+            eprintln!("run 'easy-herdr --help' for usage");
             std::process::exit(2);
         }
     };
@@ -551,8 +558,19 @@ fn main() -> io::Result<()> {
         })
     {
         eprintln!("error: --remote can only be used with the default launch command");
-        eprintln!("run 'herdr --help' for usage");
+        eprintln!("run 'easy-herdr --help' for usage");
         std::process::exit(2);
+    }
+
+    if args.get(1).map(String::as_str) == Some("install") {
+        std::process::exit(install::run(&args[2..]));
+    }
+    if args.get(1).map(String::as_str) == Some("update") {
+        let options = update::parse_self_update_args(&args[2..]).unwrap_or_default();
+        if let Err(err) = update::self_update(options) {
+            eprintln!("{err}");
+        }
+        std::process::exit(1);
     }
 
     finish_cli(cli::maybe_run(&args))?;
@@ -577,41 +595,22 @@ fn main() -> io::Result<()> {
         return client::run_client();
     }
 
-    if args.get(1).map(|s| s.as_str()) == Some("update") {
-        let options = match update::parse_self_update_args(&args[2..]) {
-            Ok(options) => options,
-            Err(err) if err.starts_with("usage:") => {
-                eprintln!("{err}");
-                std::process::exit(0);
-            }
-            Err(err) => {
-                eprintln!("{err}");
-                eprintln!("usage: herdr update [--handoff]");
-                std::process::exit(2);
-            }
-        };
-        match update::self_update(options) {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                if e.starts_with("self-update is disabled") {
-                    eprintln!("{e}");
-                } else {
-                    eprintln!("update failed: {e}");
-                }
-                std::process::exit(1);
-            }
-        }
-    }
-
-    if args.iter().any(|a| a == "--help" || a == "-h") {
+    let own_args = &args[..args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len())];
+    if own_args.iter().any(|a| a == "--help" || a == "-h") {
         platform::begin_cli_output();
-        println!("herdr — terminal workspace manager for AI coding agents");
+        println!("easy-herdr — terminal workspace manager for AI coding agents");
         println!();
-        println!("Usage: herdr [options]");
-        println!("       herdr --session <name> [options]");
-        println!("       herdr --machine <label-or-id> <command>");
-        println!("       herdr --remote <ssh-target> [--session <name>]");
+        println!("Usage: easy-herdr [options]");
+        println!("       easy-herdr --session <name> [options]");
+        println!("       easy-herdr --machine <label-or-id> <command>");
+        println!("       easy-herdr --remote <ssh-target> [--session <name>]");
         println!("       herdr session attach <name>");
+        println!("       easy-herdr switch <agent-cli> [agent-name] [-- agent-args...]");
+        println!("       easy-herdr <agent-cli> [agent-name] [-- agent-args...]");
+        println!("       easy-herdr install [--dir DIR]");
         println!("       herdr completion zsh");
         println!("       herdr update [--handoff]");
         println!("       herdr channel set <stable|preview>");
@@ -635,10 +634,17 @@ fn main() -> io::Result<()> {
         for (command, description) in [
             ("herdr", "Launch or attach to the persistent session"),
             (
+                "herdr switch <agent-cli> [name]",
+                "Run an agent as an invisible pane grouped by directory",
+            ),
+            (
                 "herdr status [server|client]",
                 "Show local client and running server status",
             ),
-            ("herdr update", "Download and install the latest version"),
+            (
+                "easy-herdr install [--dir DIR]",
+                "Install the herdr command symlink",
+            ),
             ("herdr completion zsh", "Generate shell completions for zsh"),
             (
                 "herdr server stop",
@@ -646,7 +652,7 @@ fn main() -> io::Result<()> {
             ),
             (
                 "herdr channel set <stable|preview>",
-                "Choose the stable or preview update channel",
+                "Show the fork Releases download location",
             ),
             (
                 "herdr server reload-config",
@@ -658,7 +664,7 @@ fn main() -> io::Result<()> {
             ),
             (
                 "herdr channel <subcommand>",
-                "Manage the stable or preview update channel",
+                "Show configured channel; other forms print the Releases link",
             ),
             ("herdr machine <subcommand>", "Manage saved SSH machines"),
             (
@@ -716,25 +722,27 @@ fn main() -> io::Result<()> {
         println!("Config: {}", config::config_path().display());
         println!("Logs:   {}", logging::help_log_paths_summary());
         println!("Env:    HERDR_CONFIG_PATH overrides config file path");
+        println!("Agent shortcuts accept PATH commands and bash/zsh functions or aliases.");
+        println!("{SELF_UPDATE_NOTICE}");
         println!("Home:   https://herdr.dev");
         println!();
         println!("{}", cli::AGENT_HELP_FOOTER);
         return Ok(());
     }
 
-    if args.iter().any(|a| a == "--version" || a == "-V") {
+    if own_args.iter().any(|a| a == "--version" || a == "-V") {
         platform::begin_cli_output();
-        println!("herdr {}", crate::build_info::version());
+        println!("easy-herdr {}", crate::build_info::version());
         return Ok(());
     }
 
-    if args.iter().any(|a| a == "--default-config") {
+    if own_args.iter().any(|a| a == "--default-config") {
         platform::begin_cli_output();
         print!("{DEFAULT_CONFIG}");
         return Ok(());
     }
 
-    if args.iter().any(|a| a == "--skill") {
+    if own_args.iter().any(|a| a == "--skill") {
         platform::begin_cli_output();
         print!("{SKILL}");
         return Ok(());
@@ -753,11 +761,11 @@ fn main() -> io::Result<()> {
         "--help",
         "-h",
     ];
-    for arg in &args[1..] {
+    for (index, arg) in args[1..].iter().enumerate() {
         let arg_name = arg.split_once('=').map(|(name, _)| name).unwrap_or(arg);
         if arg.starts_with('-') && !known_flags.contains(&arg_name) {
             eprintln!("unknown option: {arg}");
-            eprintln!("run 'herdr --help' for usage");
+            eprintln!("run 'easy-herdr --help' for usage");
             std::process::exit(2);
         }
         if !arg.starts_with('-')
@@ -766,6 +774,7 @@ fn main() -> io::Result<()> {
                 "client",
                 "remote-client-bridge",
                 "update",
+                "install",
                 "status",
                 "config",
                 "channel",
@@ -778,8 +787,16 @@ fn main() -> io::Result<()> {
             ]
             .contains(&arg.as_str())
         {
+            #[cfg(unix)]
+            if index == 0 {
+                if let Some(code) = switch::maybe_run_shortcut(&args) {
+                    std::process::exit(code);
+                }
+            }
+            #[cfg(not(unix))]
+            let _ = index;
             eprintln!("unknown command: {arg}");
-            eprintln!("run 'herdr --help' for usage");
+            eprintln!("run 'easy-herdr --help' for usage");
             std::process::exit(2);
         }
     }

@@ -78,7 +78,7 @@ def lint() -> None:
             "cargo",
             "clippy",
             "--bin",
-            "herdr",
+            "easy-herdr",
             "--tests",
             "--locked",
             "--target",

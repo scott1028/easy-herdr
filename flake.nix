@@ -67,8 +67,8 @@
       apps = forAllSystems (system: {
         default = {
           type = "app";
-          program = "${self.packages.${system}.default}/bin/herdr";
-          meta.description = "Run Herdr";
+          program = "${self.packages.${system}.default}/bin/easy-herdr";
+          meta.description = "Run easy-herdr";
         };
       });
 

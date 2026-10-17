@@ -11,7 +11,7 @@ pub(super) const REMOTE_BRIDGE_CLOCK: libc::clockid_t = libc::CLOCK_MONOTONIC;
 
 use super::{
     read_limited_reader, ClipboardCommand, ClipboardImage, ForegroundJob, ForegroundProcess,
-    LimitedRead, Signal,
+    LimitedRead, Signal, TerminalWindowSpec, TERMINAL_OVERRIDE_ENV,
 };
 
 pub(crate) use super::unix_common::{
@@ -237,6 +237,71 @@ fn shell_quote(value: &str) -> String {
     }
 
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn terminal_window_command(
+    spec: &TerminalWindowSpec,
+    env: impl Fn(&str) -> Option<String>,
+) -> Vec<String> {
+    if let Some(prefix) = env(TERMINAL_OVERRIDE_ENV).filter(|prefix| !prefix.trim().is_empty()) {
+        return prefix
+            .split_whitespace()
+            .map(str::to_owned)
+            .chain(spec.argv.clone())
+            .collect();
+    }
+    let cwd = spec.cwd.display().to_string();
+    let program = env("TERM_PROGRAM").unwrap_or_default();
+    let prefix = match program.as_str() {
+        "ghostty" => "open -na Ghostty --args --working-directory={cwd} -e",
+        "WezTerm" => "open -na WezTerm --args start --cwd {cwd} --",
+        "kitty" => "open -na kitty --args --directory {cwd}",
+        program if program == "Alacritty" || env("ALACRITTY_WINDOW_ID").is_some() => {
+            "open -na Alacritty --args --working-directory {cwd} -e"
+        }
+        _ => {
+            let command = format!(
+                "cd {} && exec {}",
+                shell_quote(&cwd),
+                spec.argv
+                    .iter()
+                    .map(|arg| shell_quote(arg))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            let command = command.replace('\\', "\\\\").replace('"', "\\\"");
+            let script = if program == "iTerm.app" {
+                format!("tell application \"iTerm\"\nactivate\nset newWindow to (create window with default profile)\ntell current session of newWindow to write text \"{command}\"\nend tell")
+            } else {
+                format!(
+                    "tell application \"Terminal\"\nactivate\ndo script \"{command}\"\nend tell"
+                )
+            };
+            return vec!["osascript".into(), "-e".into(), script];
+        }
+    };
+    prefix
+        .split_whitespace()
+        .map(|arg| arg.replace("{cwd}", &cwd))
+        .chain(spec.argv.clone())
+        .collect()
+}
+
+pub(crate) fn open_terminal_window(spec: &TerminalWindowSpec) -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt as _;
+    let argv = terminal_window_command(spec, |key| std::env::var(key).ok());
+    let mut child = Command::new(&argv[0])
+        .args(&argv[1..])
+        .current_dir(&spec.cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 #[repr(C)]
@@ -1209,6 +1274,62 @@ pub fn process_exists(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_windows_follow_host_and_override() {
+        let mut spec = TerminalWindowSpec {
+            argv: vec!["herdr".into(), "switch".into()],
+            cwd: "/work dir".into(),
+        };
+        for (key, value, expected) in [
+            (
+                "TERM_PROGRAM",
+                "ghostty",
+                "open|-na|Ghostty|--args|--working-directory=/work dir|-e",
+            ),
+            (
+                "TERM_PROGRAM",
+                "WezTerm",
+                "open|-na|WezTerm|--args|start|--cwd|/work dir|--",
+            ),
+            (
+                "TERM_PROGRAM",
+                "kitty",
+                "open|-na|kitty|--args|--directory|/work dir",
+            ),
+            (
+                "TERM_PROGRAM",
+                "Alacritty",
+                "open|-na|Alacritty|--args|--working-directory|/work dir|-e",
+            ),
+            (
+                "ALACRITTY_WINDOW_ID",
+                "1",
+                "open|-na|Alacritty|--args|--working-directory|/work dir|-e",
+            ),
+            (TERMINAL_OVERRIDE_ENV, "custom --new", "custom|--new"),
+        ] {
+            assert_eq!(
+                terminal_window_command(&spec, |name| (name == key).then(|| value.into()))
+                    .join("|"),
+                format!("{expected}|herdr|switch")
+            );
+        }
+        spec.argv = vec!["/tool path".into(), "a\"b\\c'".into()];
+        for program in ["Apple_Terminal", "iTerm.app", ""] {
+            let command = terminal_window_command(&spec, |key| {
+                (key == "TERM_PROGRAM").then(|| program.into())
+            });
+            assert_eq!(&command[..2], ["osascript", "-e"]);
+            assert!(command[2].contains("cd '/work dir' && exec '/tool path'"));
+            assert!(command[2].contains("a\\\"b\\\\c"));
+            assert!(command[2].contains(if program == "iTerm.app" {
+                "create window with default profile"
+            } else {
+                "do script"
+            }));
+        }
+    }
 
     #[test]
     fn nofile_target_raises_low_soft_limit_to_cap_when_hard_is_unlimited() {

@@ -11,6 +11,7 @@ use tokio::sync::mpsc::{self, error::TryRecvError as DataTryRecvError};
 use tracing::{debug, warn};
 
 use crate::pty::fd;
+use crate::pty::passthrough::PtyPassthrough;
 
 // Actor handle methods must call wake_actor() after queuing work. The idle
 // timeout is only a fallback for missed wakes; PTY and wake readiness drive
@@ -18,6 +19,9 @@ use crate::pty::fd;
 const ACTOR_IDLE_POLL_MS: i32 = 1000;
 const ACTOR_COMMAND_BUFFER: usize = 1024;
 const HANDOFF_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+/// Bounds for reading a passthrough pane's last bytes during shutdown.
+const PASSTHROUGH_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
+const PASSTHROUGH_DRAIN_MAX_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActorState {
@@ -69,6 +73,8 @@ pub(crate) struct PtyIoActorConfig {
     pub initially_quiesced: bool,
     pub on_read: ReadCallback,
     pub on_reader_exit: Option<ReaderExitCallback>,
+    /// Owning passthrough client, if any.
+    pub passthrough: Option<Arc<PtyPassthrough>>,
 }
 
 enum PtyIoDataCommand {
@@ -399,6 +405,14 @@ impl PtyIoActor {
         let controls = Arc::new(Mutex::new(SharedPtyControls::default()));
         let response_order = Arc::new(Mutex::new(()));
         let file = Arc::new(std::fs::File::from(config.master_fd));
+        if let Some(passthrough) = &config.passthrough {
+            let wake = wake_pipe.writer.clone();
+            passthrough.set_waker(Box::new(move || {
+                if let Err(err) = wake.wake() {
+                    debug!(err = %err, "failed to wake PTY actor after passthrough drain");
+                }
+            }));
+        }
         let handle = PtyIoActorHandle {
             data_tx,
             control_tx,
@@ -428,6 +442,7 @@ impl PtyIoActor {
             response_order,
             on_read: config.on_read,
             on_reader_exit: config.on_reader_exit,
+            passthrough: config.passthrough,
             poll_observer,
         };
         std::thread::Builder::new()
@@ -462,6 +477,7 @@ struct PtyIoActorRunner {
     response_order: Arc<Mutex<()>>,
     on_read: ReadCallback,
     on_reader_exit: Option<ReaderExitCallback>,
+    passthrough: Option<Arc<PtyPassthrough>>,
     poll_observer: Option<std_mpsc::Sender<()>>,
 }
 
@@ -538,10 +554,11 @@ impl PtyIoActorRunner {
                 let _ = poll_observer.send(());
             }
 
+            let reading = self.state == ActorState::Running && !self.passthrough_reads_paused();
             match fd::poll_pty_and_wake(
                 self.file.as_raw_fd(),
                 self.wake_read_fd.as_raw_fd(),
-                self.state == ActorState::Running,
+                reading,
                 !self.pending_writes.is_empty(),
                 self.poll_timeout_ms(),
             ) {
@@ -553,10 +570,7 @@ impl PtyIoActorRunner {
                         }
                         continue;
                     }
-                    if self.state == ActorState::Running
-                        && readiness.pty_read_ready
-                        && !self.read_once()
-                    {
+                    if reading && readiness.pty_read_ready && !self.read_once() {
                         break;
                     }
                     if readiness.pty_write_ready && !self.pending_writes.is_empty() {
@@ -578,10 +592,68 @@ impl PtyIoActorRunner {
         }
 
         self.close_input_queue();
+        if let Some(passthrough) = &self.passthrough {
+            passthrough.finish_reader();
+        }
         if let Some(on_reader_exit) = self.on_reader_exit.take() {
             on_reader_exit();
         }
         debug!(pane = self.pane_id, "PTY actor exiting");
+    }
+
+    fn passthrough_reads_paused(&self) -> bool {
+        self.passthrough
+            .as_ref()
+            .is_some_and(|passthrough| passthrough.reads_paused())
+    }
+
+    /// Forwards the program's last bytes, such as leaving the alternate screen, until the
+    /// PTY closes. The pane is closing, so they skip parsing. The bounds only apply while
+    /// another process keeps the PTY open.
+    fn drain_passthrough_output(&mut self) {
+        let Some(passthrough) = self.passthrough.clone() else {
+            return;
+        };
+        if self.state != ActorState::Running {
+            return;
+        }
+        let deadline = Instant::now() + PASSTHROUGH_DRAIN_TIMEOUT;
+        let mut buf = [0u8; 8192];
+        let mut drained = 0;
+        while drained < PASSTHROUGH_DRAIN_MAX_BYTES {
+            match self.file.read(&mut buf) {
+                Ok(0) => return,
+                Ok(n) => {
+                    passthrough.on_output(&buf[..n]);
+                    drained += n;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+                // Linux moves slave writes to the master asynchronously; wait for them.
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return;
+                    }
+                    let timeout_ms = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
+                    match fd::poll_pty_and_wake(
+                        self.file.as_raw_fd(),
+                        self.wake_read_fd.as_raw_fd(),
+                        true,
+                        false,
+                        timeout_ms,
+                    ) {
+                        Ok(readiness) if readiness.wake_ready => {
+                            if fd::drain_wake_fd(self.wake_read_fd.as_raw_fd()).is_err() {
+                                return;
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(_) => return,
+                    }
+                }
+                Err(_) => return,
+            }
+        }
     }
 
     fn drain_commands(&mut self) -> bool {
@@ -717,7 +789,10 @@ impl PtyIoActorRunner {
                 let _ = reply.send(Ok(()));
                 return true;
             }
-            PtyIoControlCommand::Shutdown => return true,
+            PtyIoControlCommand::Shutdown => {
+                self.drain_passthrough_output();
+                return true;
+            }
         }
         false
     }
@@ -831,6 +906,9 @@ impl PtyIoActorRunner {
                 false
             }
             Ok(n) => {
+                if let Some(passthrough) = &self.passthrough {
+                    passthrough.on_output(&buf[..n]);
+                }
                 let response_order = Arc::clone(&self.response_order);
                 let _order = response_order
                     .lock()
@@ -856,7 +934,8 @@ impl PtyIoActorRunner {
     }
 
     fn enqueue_terminal_responses(&mut self, terminal_responses: Vec<Bytes>) {
-        if self.state == ActorState::Released {
+        // A passthrough client's host terminal answers queries itself.
+        if self.state == ActorState::Released || self.passthrough.is_some() {
             return;
         }
         for bytes in terminal_responses {
@@ -1041,6 +1120,10 @@ fn input_submission_closed_error() -> std::io::Error {
 }
 
 #[cfg(test)]
+#[path = "unix_passthrough_tdd.rs"]
+mod passthrough_tdd;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::{
@@ -1084,6 +1167,7 @@ mod tests {
                 PtyReadResult::empty()
             }),
             on_reader_exit: None,
+            passthrough: None,
         };
         let handle = if let Some(poll_observer) = poll_observer {
             PtyIoActor::spawn_with_poll_observer(config, poll_observer)
@@ -1118,6 +1202,7 @@ mod tests {
             response_order: Arc::new(Mutex::new(())),
             on_read: Box::new(|_| PtyReadResult::empty()),
             on_reader_exit: None,
+            passthrough: None,
             poll_observer: None,
         };
         (runner, peer)
@@ -1348,6 +1433,7 @@ mod tests {
                     attempt_tx.send(attempt).expect("attempt receiver alive");
                 }
             })),
+            passthrough: None,
         };
         let handle = PtyIoActor::spawn(config).expect("actor spawn");
         *handle_slot
@@ -1429,6 +1515,7 @@ mod tests {
                 PtyReadResult::empty()
             }),
             on_reader_exit: None,
+            passthrough: None,
         })
         .expect("actor spawn");
 
@@ -1720,6 +1807,7 @@ mod tests {
                 }],
             }),
             on_reader_exit: None,
+            passthrough: None,
             poll_observer: None,
         };
         let handle = PtyIoActorHandle {
@@ -1851,6 +1939,7 @@ mod tests {
             response_order: Arc::new(Mutex::new(())),
             on_read: Box::new(|_| PtyReadResult::empty()),
             on_reader_exit: None,
+            passthrough: None,
             poll_observer: None,
         };
 

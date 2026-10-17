@@ -111,7 +111,12 @@ $webRoot = Join-Path $root "web"
 $herdrHome = Join-Path $root "home"
 $installDir = Join-Path $root "bin"
 New-Item -ItemType Directory -Force -Path $webRoot | Out-Null
-Copy-Item -LiteralPath $archive -Destination (Join-Path $webRoot "herdr-windows-x86_64.zip")
+# Keep testing the upstream installer with its legacy executable name.
+$fixture = Join-Path $root "installer-fixture"
+Expand-Archive -LiteralPath $archive -DestinationPath $fixture
+Rename-Item -LiteralPath (Join-Path $fixture "easy-herdr.exe") -NewName "herdr.exe"
+$archive = Join-Path $webRoot "herdr-windows-x86_64.zip"
+Compress-Archive -Path (Join-Path $fixture "*") -DestinationPath $archive
 Copy-Item -LiteralPath $installerPath -Destination (Join-Path $webRoot "install.ps1")
 $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
 

@@ -1,0 +1,297 @@
+name: easy-herdr release
+
+# Fork-only easy-herdr release for easy-herdr-v* tags.
+# Upstream release.yml stays gated to herdrdev/herdr.
+on:
+  push:
+    tags:
+      - "easy-herdr-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. easy-herdr-v0.9.5)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  RUST_TOOLCHAIN_VERSION: 1.96.1
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  APPIMAGETOOL_URL: https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+  APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+  APPIMAGE_RUNTIME_BASE_URL: https://github.com/AppImage/type2-runtime/releases/download/20251108
+
+jobs:
+  build:
+    if: github.repository != 'herdrdev/herdr'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            name: easy-herdr-linux-x86_64
+            arch: x86_64
+            runtime_sha256: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            name: easy-herdr-linux-aarch64
+            arch: aarch64
+            runtime_sha256: 00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            name: easy-herdr-macos-x86_64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            name: easy-herdr-macos-aarch64
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+            name: easy-herdr-windows-x86_64.zip
+    env:
+      LIBGHOSTTY_VT_OPTIMIZE: ReleaseFast
+      LIBGHOSTTY_VT_SIMD: 'true'
+      BINARY: ${{ matrix.name }}
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify tag matches Cargo.toml version
+        shell: bash
+        run: |
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          case "$RELEASE_TAG" in
+            "easy-herdr-v$CARGO_VERSION" | "easy-herdr-v$CARGO_VERSION".* | "easy-herdr-v$CARGO_VERSION"-*) ;;
+            *)
+              echo "error: tag $RELEASE_TAG must start with easy-herdr-v$CARGO_VERSION" >&2
+              exit 1
+              ;;
+          esac
+          echo "CARGO_VERSION=$CARGO_VERSION" >> "$GITHUB_ENV"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN_VERSION }}
+          targets: ${{ matrix.target }}
+
+      - name: Install Zig
+        uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
+        with:
+          version: 0.16.0
+
+      - name: Prefer official Ubuntu mirrors over Azure
+        if: runner.os == 'Linux'
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i '/azure.archive.ubuntu.com/d' /etc/apt/apt-mirrors.txt
+            echo "Using apt mirrors:"
+            cat /etc/apt/apt-mirrors.txt
+          fi
+
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo find /etc/apt/sources.list.d -type f \( -iname '*microsoft*' -o -iname '*azure-cli*' \) -print -delete
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build musl-tools gcc-aarch64-linux-gnu crossbuild-essential-arm64
+
+      - name: Install macOS build tools
+        if: runner.os == 'macOS'
+        run: HOMEBREW_NO_AUTO_UPDATE=1 brew install cmake ninja
+
+      - name: Set Linux aarch64 linker
+        if: runner.os == 'Linux' && matrix.target == 'aarch64-unknown-linux-musl'
+        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          key: easy-herdr-release-${{ matrix.target }}
+
+      - name: Remove Zig caches
+        shell: bash
+        run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package artifact
+        if: runner.os != 'Windows'
+        shell: bash
+        run: cp target/${{ matrix.target }}/release/easy-herdr ${{ matrix.name }}
+
+      - name: Package artifact
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $package = Join-Path $env:RUNNER_TEMP "Microsoft.Windows.Console.ConPTY.nupkg"
+          $stage = Join-Path $env:RUNNER_TEMP "easy-herdr-windows-x86_64"
+          .\scripts\package_windows_conpty.ps1 `
+            -HerdrExe target\${{ matrix.target }}\release\easy-herdr.exe `
+            -PackagePath $package `
+            -StageDir $stage `
+            -OutputPath ${{ matrix.name }}
+          $version = (& (Join-Path $stage "easy-herdr.exe") --version | Out-String).Trim()
+          if ($version -notmatch [regex]::Escape($env:CARGO_VERSION) -or $version -match "preview") {
+            throw "Packaged Windows binary has unexpected version identity: $version"
+          }
+
+      - name: Verify static binary
+        if: runner.os == 'Linux'
+        run: |
+          file "$BINARY" | tee BUILD_INFO.txt
+          ldd "$BINARY" 2>&1 | tee -a BUILD_INFO.txt
+          grep -q "statically linked" BUILD_INFO.txt
+          if nm -u "$BINARY" 2>/dev/null | grep -E '(__cxa|GLIBCXX|CXXABI|_ZSt)'; then
+            echo "error: Linux artifact has unresolved C++ runtime symbols" >&2
+            exit 1
+          fi
+
+      - name: Package AppImage
+        if: runner.os == 'Linux'
+        run: |
+          tools="$RUNNER_TEMP/appimage-tools"
+          mkdir -p "$tools"
+          curl -fsSL -o "$tools/appimagetool" "$APPIMAGETOOL_URL"
+          curl -fsSL -o "$tools/runtime" "$APPIMAGE_RUNTIME_BASE_URL/runtime-${{ matrix.arch }}"
+          printf '%s  %s\n' \
+            "$APPIMAGETOOL_SHA256" "$tools/appimagetool" \
+            "${{ matrix.runtime_sha256 }}" "$tools/runtime" | sha256sum -c -
+          chmod +x "$tools/appimagetool"
+          APPIMAGETOOL="$tools/appimagetool" APPIMAGE_RUNTIME="$tools/runtime" \
+            scripts/package_appimage.sh "$BINARY" ${{ matrix.arch }} "$BINARY.AppImage"
+
+      - name: Smoke test x86_64 artifacts
+        if: runner.os == 'Linux' && matrix.arch == 'x86_64'
+        run: |
+          ./"$BINARY" --version
+          # Runners have no FUSE; extract-and-run still exercises the runtime and payload.
+          APPIMAGE_EXTRACT_AND_RUN=1 ./"$BINARY.AppImage" --version
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            ${{ matrix.name }}
+            ${{ matrix.name }}.AppImage
+
+  flake-check:
+    if: github.repository != 'herdrdev/herdr'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            always-allow-substitutes = true
+
+      - name: Run Nix flake check
+        run: |
+          nix flake check --print-build-logs
+          nix flake check --all-systems --no-build --print-build-logs
+
+  validate-release-inputs:
+    if: github.repository != 'herdrdev/herdr'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Fetch upstream release tags for documentation validation
+        run: git fetch --no-tags https://github.com/herdrdev/herdr.git '+refs/tags/v*:refs/tags/v*' '+refs/tags/preview-*:refs/tags/preview-*'
+
+      - name: Validate release inputs
+        run: |
+          python3 scripts/changelog.py validate-product-announcement
+          python3 scripts/agent_detection_manifest_check.py --require-all-published
+          python3 scripts/config_reference_check.py
+          node scripts/docs/versions.mjs check
+          node scripts/docs/preview.mjs check
+          bun test scripts/docs/*.test.ts
+          test -f docs/next/README.md
+          test -f docs/next/README.zh-CN.md
+
+  release:
+    needs: [build, flake-check, validate-release-inputs]
+    if: github.repository != 'herdrdev/herdr'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Verify release tag points to this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if TAG_SHA=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha); then
+            if [ "$TAG_SHA" != "$GITHUB_SHA" ]; then
+              echo "error: tag $RELEASE_TAG points to $TAG_SHA instead of $GITHUB_SHA" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Write checksums and release notes
+        working-directory: dist
+        run: |
+          sha256sum easy-herdr-* > SHA256SUMS
+          cat SHA256SUMS
+          cat > "$RUNNER_TEMP/RELEASE_NOTES.md" <<EOF
+          Built from \`$GITHUB_SHA\`.
+
+          - \`easy-herdr-linux-<arch>\`: static binary. \`chmod +x\` it and put it on \`PATH\` as \`easy-herdr\`.
+          - \`easy-herdr-linux-<arch>.AppImage\`: needs FUSE; without it, set \`APPIMAGE_EXTRACT_AND_RUN=1\`.
+          - \`easy-herdr-macos-<arch>\`: macOS binary. \`chmod +x\` it and put it on \`PATH\` as \`easy-herdr\`.
+          - \`easy-herdr-windows-x86_64.zip\`: extract the archive and keep \`easy-herdr.exe\` beside its ConPTY runtime files.
+
+          easy-herdr does not update itself. Download new builds from https://github.com/scott1028/herdr/releases.
+          EOF
+
+      - name: Create release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          files: |
+            dist/easy-herdr-linux-x86_64
+            dist/easy-herdr-linux-x86_64.AppImage
+            dist/easy-herdr-linux-aarch64
+            dist/easy-herdr-linux-aarch64.AppImage
+            dist/easy-herdr-macos-x86_64
+            dist/easy-herdr-macos-aarch64
+            dist/easy-herdr-windows-x86_64.zip
+            dist/SHA256SUMS
+          body_path: ${{ runner.temp }}/RELEASE_NOTES.md
+          fail_on_unmatched_files: true

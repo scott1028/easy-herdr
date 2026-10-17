@@ -12,7 +12,7 @@ fn capture(args: &[&str], response: Value) -> Capture {
     let socket = base.join("contract.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     listener.set_nonblocking(true).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_herdr"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_easy-herdr"))
         .args(args)
         .env("HERDR_SOCKET_PATH", &socket)
         .env("XDG_CONFIG_HOME", &base)

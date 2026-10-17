@@ -121,6 +121,7 @@ async fn canonical_api_rejection_writes_nothing_and_allows_same_name_retry() {
             initially_quiesced: false,
             on_read: Box::new(|_| PtyReadResult::empty()),
             on_reader_exit: None,
+            passthrough: None,
         })
         .unwrap();
         let (mut app, pane_id, terminal_id) = app_with_actor(handle);
@@ -209,6 +210,7 @@ async fn input_admission_does_not_wait_for_actor_and_raw_input_stays_intact() {
             PtyReadResult::empty()
         }),
         on_reader_exit: None,
+        passthrough: None,
     })
     .unwrap();
     let (mut app, pane_id, _) = app_with_actor(handle);
@@ -273,6 +275,7 @@ fn canonical_multiline_submission_preserves_each_line() {
             initially_quiesced: false,
             on_read: Box::new(|_| PtyReadResult::empty()),
             on_reader_exit: None,
+            passthrough: None,
         })
         .unwrap();
         let line = [vec![b'x'; 600], vec![delimiter]].concat();

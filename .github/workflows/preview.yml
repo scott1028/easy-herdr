@@ -304,6 +304,13 @@ jobs:
         with:
           path: artifacts
 
+      - name: Stage branding from the selected preview commit
+        shell: bash
+        run: |
+          mkdir -p artifacts/branding
+          git show '${{ needs.preflight.outputs.commit }}:assets/mascot.png' > artifacts/branding/mascot.png
+          git show '${{ needs.preflight.outputs.commit }}:assets/herdr.svg' > artifacts/branding/herdr.svg
+
       - name: Record previous preview commit
         id: previous-preview
         shell: bash
@@ -364,12 +371,16 @@ jobs:
             echo "error: immutable release $PREVIEW_TAG points at $tag_commit, expected $PREVIEW_COMMIT" >&2
             exit 1
           fi
-          expected_assets="$(jq -S '{
+          expected_assets="$(jq -S \
+            --arg mascot "$(sha256sum artifacts/branding/mascot.png | cut -d' ' -f1)" \
+            --arg icon "$(sha256sum artifacts/branding/herdr.svg | cut -d' ' -f1)" '{
             "herdr-linux-x86_64": .["linux-x86_64"],
             "herdr-linux-aarch64": .["linux-aarch64"],
             "herdr-macos-x86_64": .["macos-x86_64"],
             "herdr-macos-aarch64": .["macos-aarch64"],
-            "herdr-windows-x86_64.zip": .["windows-x86_64"]
+            "herdr-windows-x86_64.zip": .["windows-x86_64"],
+            "mascot.png": $mascot,
+            "herdr.svg": $icon
           }' preview-sha256.json)"
           actual_assets="$(jq -S '[
             .assets[] | select(.digest | type == "string") |
@@ -400,6 +411,8 @@ jobs:
             artifacts/herdr-macos-x86_64/herdr-macos-x86_64
             artifacts/herdr-macos-aarch64/herdr-macos-aarch64
             artifacts/herdr-windows-x86_64.zip/herdr-windows-x86_64.zip
+            artifacts/branding/mascot.png
+            artifacts/branding/herdr.svg
 
       - name: Publish preview prerelease
         if: steps.existing-preview.outputs.already_published != 'true'

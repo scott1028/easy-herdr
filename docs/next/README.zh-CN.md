@@ -2,7 +2,7 @@
 
 
 <p align="center">
-  <img src="assets/logo.png" alt="herdr" width="100" />
+  <img src="assets/herdr.svg" alt="Herdr 公羊吉祥物图标" width="100" />
 </p>
 
 <p align="center">
@@ -22,6 +22,10 @@
 </p>
 
 ---
+
+<p align="center">
+  <img src="assets/mascot.png" alt="害羞又嘴硬的 Herdr 公羊吉祥物" width="960" />
+</p>
 
 https://github.com/user-attachments/assets/043ec09f-4bdd-41d5-aee0-8fda6b83e267
 
