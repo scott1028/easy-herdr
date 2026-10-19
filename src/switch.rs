@@ -115,14 +115,29 @@ fn report_error(err: &str) -> i32 {
     1
 }
 
+/// Runs `easy-herdr <agent-cli> [agent-args...]`; every argument goes to the agent.
 #[cfg(unix)]
-pub(crate) fn maybe_run_shortcut(args: &[String]) -> Option<i32> {
-    if !shortcut::get_is_available(args.get(1)?) {
+pub(crate) fn maybe_run_shortcut(raw_args: &[String]) -> Option<i32> {
+    let program = raw_args.get(1)?;
+    // Check the plain name first: a herdr command lookup builds the CLI spec.
+    if !shortcut::get_is_plain_name(program)
+        || crate::cli::get_is_command(program)
+        || !shortcut::get_is_available(program)
+    {
         return None;
     }
-    let mut switch_args = args.to_vec();
-    switch_args.insert(1, "switch".into());
-    maybe_run(&switch_args)
+    let argv = get_shortcut_argv(&raw_args[1..]);
+    Some(launch(argv, None).unwrap_or_else(|err| report_error(&err)))
+}
+
+/// The agent argv, minus one `--` right after the agent CLI.
+#[cfg(unix)]
+fn get_shortcut_argv(args: &[String]) -> Vec<String> {
+    let mut argv = args.to_vec();
+    if argv.get(1).is_some_and(|arg| arg == "--") {
+        argv.remove(1);
+    }
+    argv
 }
 
 fn print_switch_help() {

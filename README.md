@@ -66,13 +66,20 @@ easy-herdr switch codex
 The syntax is:
 
 ```text
-easy-herdr <agent-cli> [agent-name] [-- agent-args...]
+easy-herdr <agent-cli> [agent-args...]
+easy-herdr switch <agent-cli> [agent-name] [-- agent-args...]
 ```
 
-`agent-name` names the agent inside herdr; it is not passed to the agent CLI. Put all agent arguments after `--`. For example, replacing `MODEL` with your model name:
+The shortcut passes every argument to the agent CLI; a single `--` right after `<agent-cli>` is dropped. For example, replacing `MODEL` with your model name:
 
 ```bash
-easy-herdr codex reviewer -- --model MODEL
+easy-herdr codex --model MODEL
+```
+
+To name the agent inside herdr, use `switch`. `agent-name` is not passed to the agent CLI; put agent arguments after `--`:
+
+```bash
+easy-herdr switch codex reviewer -- --model MODEL
 ```
 
 The shortcut accepts an executable on `PATH`, or a bash/zsh function or alias loaded by the interactive shell selected by `$SHELL`. Names may contain ASCII letters, digits, `.`, `_`, `+`, and `-`, and cannot start with `-`. Existing easy-herdr commands take precedence. Builtins and keywords alone do not qualify; unavailable names still print `unknown command: <name>` and exit 2.

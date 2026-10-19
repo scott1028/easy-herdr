@@ -66,13 +66,20 @@ easy-herdr switch codex
 語法：
 
 ```text
-easy-herdr <agent-cli> [agent-name] [-- agent-args...]
+easy-herdr <agent-cli> [agent-args...]
+easy-herdr switch <agent-cli> [agent-name] [-- agent-args...]
 ```
 
-`agent-name` 是 herdr 內的 agent 名稱，不會傳給 agent CLI。所有 agent 參數都放在 `--` 後面。例如，將 `MODEL` 換成要用的模型名稱：
+捷徑會把所有參數原樣傳給 agent CLI；緊接在 `<agent-cli>` 後的單一 `--` 會被去掉。例如，將 `MODEL` 換成要用的模型名稱：
 
 ```bash
-easy-herdr codex reviewer -- --model MODEL
+easy-herdr codex --model MODEL
+```
+
+要在 herdr 內為 agent 命名，請用 `switch`。`agent-name` 不會傳給 agent CLI，agent 參數放在 `--` 後面：
+
+```bash
+easy-herdr switch codex reviewer -- --model MODEL
 ```
 
 捷徑支援 `PATH` 上的可執行檔，以及由 `$SHELL` 指定之互動 shell 載入的 bash/zsh function 或 alias。名稱只能包含 ASCII 英文字母、數字、`.`、`_`、`+`、`-`，且不能以 `-` 開頭。既有 easy-herdr 指令優先。單純的內建指令與關鍵字不符合條件；找不到的名稱仍會印出 `unknown command: <name>` 並以狀態碼 2 結束。
