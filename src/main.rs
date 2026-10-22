@@ -616,11 +616,6 @@ fn main() -> io::Result<()> {
         println!("       easy-herdr --machine <label-or-id> <command>");
         println!("       easy-herdr --remote <ssh-target> [--session <name>]");
         println!("       herdr session attach <name>");
-        println!("       easy-herdr switch <agent-cli> [agent-name] [-- agent-args...]");
-        #[cfg(unix)]
-        println!("       easy-herdr cluster <agent-cli>... [prompt]");
-        println!("       easy-herdr <agent-cli> [agent-args...]");
-        println!("       easy-herdr install [--dir DIR]");
         println!("       herdr completion zsh");
         println!("       herdr update [--handoff]");
         println!("       herdr channel set <stable|preview>");
@@ -639,26 +634,19 @@ fn main() -> io::Result<()> {
         println!("       herdr pane <subcommand> ...");
         println!("       herdr session <subcommand> ...");
         println!("       herdr integration <subcommand> ...");
+        println!("       easy-herdr switch <agent-cli> [agent-name] [-- agent-args...]");
+        #[cfg(unix)]
+        println!("       easy-herdr cluster <agent-cli>... [prompt]");
+        #[cfg(unix)]
+        println!("       easy-herdr <agent-cli> [agent-args...]");
+        println!("       easy-herdr install [--dir DIR]");
         println!();
         println!("Common commands:");
         for (command, description) in [
             ("herdr", "Launch or attach to the persistent session"),
             (
-                "herdr switch <agent-cli> [name]",
-                "Run an agent as an invisible pane grouped by directory",
-            ),
-            #[cfg(unix)]
-            (
-                "easy-herdr cluster <agent-cli>... [prompt]",
-                "Run several agents in terminal tabs or windows",
-            ),
-            (
                 "herdr status [server|client]",
                 "Show local client and running server status",
-            ),
-            (
-                "easy-herdr install [--dir DIR]",
-                "Install the herdr command symlink",
             ),
             ("herdr completion zsh", "Generate shell completions for zsh"),
             (
@@ -715,6 +703,19 @@ fn main() -> io::Result<()> {
                 "herdr integration <subcommand>",
                 "Manage built-in agent integrations",
             ),
+            (
+                "easy-herdr switch <agent-cli> [agent-name]",
+                "Run an agent as an invisible pane grouped by directory",
+            ),
+            #[cfg(unix)]
+            (
+                "easy-herdr cluster <agent-cli>... [prompt]",
+                "Run several agents in terminal tabs or windows",
+            ),
+            (
+                "easy-herdr install [--dir DIR]",
+                "Install the herdr command symlink",
+            ),
         ] {
             println!("  {command:<32} {description}");
         }
@@ -737,9 +738,9 @@ fn main() -> io::Result<()> {
         println!("Config: {}", config::config_path().display());
         println!("Logs:   {}", logging::help_log_paths_summary());
         println!("Env:    HERDR_CONFIG_PATH overrides config file path");
+        println!("Home:   https://herdr.dev");
         println!("Agent shortcuts accept PATH commands and bash/zsh functions or aliases.");
         println!("{SELF_UPDATE_NOTICE}");
-        println!("Home:   https://herdr.dev");
         println!();
         println!("{}", cli::AGENT_HELP_FOOTER);
         return Ok(());
