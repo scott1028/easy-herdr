@@ -883,6 +883,31 @@ pub fn open_url(url: &str) -> std::io::Result<Option<std::process::Child>> {
         .map(Some)
 }
 
+#[cfg(test)]
+#[path = "linux_tab_tdd.rs"]
+mod tab_tdd;
+
+fn terminal_tab_command(
+    spec: &TerminalWindowSpec,
+    env: impl Fn(&str) -> Option<String>,
+) -> Option<Vec<String>> {
+    if env(TERMINAL_OVERRIDE_ENV)
+        .filter(|prefix| !prefix.trim().is_empty())
+        .is_some()
+    {
+        return None;
+    }
+    let cwd = spec.cwd.display().to_string();
+    let prefix = terminal_command_prefix(env, true)?;
+    Some(
+        prefix
+            .split_whitespace()
+            .map(|arg| arg.replace("{cwd}", &cwd))
+            .chain(spec.argv.clone())
+            .collect(),
+    )
+}
+
 fn terminal_window_command(
     spec: &TerminalWindowSpec,
     env: impl Fn(&str) -> Option<String>,
@@ -895,38 +920,73 @@ fn terminal_window_command(
             .collect();
     }
     let cwd = spec.cwd.display().to_string();
-    let prefix = [
-        (
-            "TERM_PROGRAM",
-            Some("ghostty"),
-            "ghostty --working-directory={cwd} -e",
-        ),
-        ("KONSOLE_VERSION", None, "konsole --workdir {cwd} -e"),
-        ("KITTY_WINDOW_ID", None, "kitty --directory {cwd}"),
-        ("WEZTERM_PANE", None, "wezterm start --cwd {cwd} --"),
-        (
-            "ALACRITTY_WINDOW_ID",
-            None,
-            "alacritty --working-directory {cwd} -e",
-        ),
-        (
-            "GNOME_TERMINAL_SCREEN",
-            None,
-            "gnome-terminal --working-directory={cwd} --",
-        ),
-        ("TERM", Some("foot"), "foot --working-directory={cwd}"),
-    ]
-    .into_iter()
-    .find(|(key, expected, _)| {
-        env(key).is_some_and(|value| expected.is_none_or(|expected| value == expected))
-    })
-    .map(|(_, _, prefix)| prefix)
-    .unwrap_or("x-terminal-emulator -e");
+    let prefix = terminal_command_prefix(env, false).unwrap_or("x-terminal-emulator -e");
     prefix
         .split_whitespace()
         .map(|arg| arg.replace("{cwd}", &cwd))
         .chain(spec.argv.clone())
         .collect()
+}
+
+fn terminal_command_prefix(
+    env: impl Fn(&str) -> Option<String>,
+    tab: bool,
+) -> Option<&'static str> {
+    [
+        (
+            "TERM_PROGRAM",
+            Some("ghostty"),
+            "ghostty --working-directory={cwd} -e",
+            None,
+        ),
+        (
+            "KONSOLE_VERSION",
+            None,
+            "konsole --workdir {cwd} -e",
+            Some("konsole --new-tab --workdir {cwd} -e"),
+        ),
+        (
+            "KITTY_WINDOW_ID",
+            None,
+            "kitty --directory {cwd}",
+            (tab && env("KITTY_LISTEN_ON").is_some())
+                .then_some("kitty @ launch --type=tab --cwd {cwd}"),
+        ),
+        (
+            "WEZTERM_PANE",
+            None,
+            "wezterm start --cwd {cwd} --",
+            Some("wezterm cli spawn --cwd {cwd} --"),
+        ),
+        (
+            "ALACRITTY_WINDOW_ID",
+            None,
+            "alacritty --working-directory {cwd} -e",
+            None,
+        ),
+        (
+            "GNOME_TERMINAL_SCREEN",
+            None,
+            "gnome-terminal --working-directory={cwd} --",
+            Some("gnome-terminal --tab --working-directory={cwd} --"),
+        ),
+        ("TERM", Some("foot"), "foot --working-directory={cwd}", None),
+    ]
+    .into_iter()
+    .find(|(key, expected, _, _)| {
+        env(key).is_some_and(|value| expected.is_none_or(|expected| value == expected))
+    })
+    .and_then(|(_, _, window, tab_prefix)| if tab { tab_prefix } else { Some(window) })
+}
+
+pub(crate) fn open_terminal_tab(spec: &TerminalWindowSpec) -> std::io::Result<()> {
+    if terminal_tab_command(spec, |key| std::env::var(key).ok())
+        .is_some_and(|argv| super::unix_common::run_tab_command(&argv, &spec.cwd))
+    {
+        Ok(())
+    } else {
+        open_terminal_window(spec)
+    }
 }
 
 pub(crate) fn open_terminal_window(spec: &TerminalWindowSpec) -> std::io::Result<()> {

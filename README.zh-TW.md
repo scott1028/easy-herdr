@@ -66,13 +66,20 @@ easy-herdr switch codex
 語法：
 
 ```text
-easy-herdr <agent-cli> [agent-name] [-- agent-args...]
+easy-herdr <agent-cli> [agent-args...]
+easy-herdr switch <agent-cli> [agent-name] [-- agent-args...]
 ```
 
-`agent-name` 是 herdr 內的 agent 名稱，不會傳給 agent CLI。所有 agent 參數都放在 `--` 後面。例如，將 `MODEL` 換成要用的模型名稱：
+捷徑會把所有參數原樣傳給 agent CLI；緊接在 `<agent-cli>` 後的單一 `--` 會被去掉。例如，將 `MODEL` 換成要用的模型名稱：
 
 ```bash
-easy-herdr codex reviewer -- --model MODEL
+easy-herdr codex --model MODEL
+```
+
+要在 herdr 內為 agent 命名，請用 `switch`。`agent-name` 不會傳給 agent CLI，agent 參數放在 `--` 後面：
+
+```bash
+easy-herdr switch codex reviewer -- --model MODEL
 ```
 
 捷徑支援 `PATH` 上的可執行檔，以及由 `$SHELL` 指定之互動 shell 載入的 bash/zsh function 或 alias。名稱只能包含 ASCII 英文字母、數字、`.`、`_`、`+`、`-`，且不能以 `-` 開頭。既有 easy-herdr 指令優先。單純的內建指令與關鍵字不符合條件；找不到的名稱仍會印出 `unknown command: <name>` 並以狀態碼 2 結束。
@@ -113,6 +120,30 @@ HERDR_SWITCH_TERMINAL="kitty" easy-herdr codex
 ```
 
 💤 閒置 · ⏳ 工作中 · ✅ 完成 · ✋ 等待回應。狀態未知或沒有 agent 時不顯示圖示。**完成**表示工作已結束，會保持顯示直到下一個任務開始。
+
+## Cluster
+
+在 Unix 上，`cluster` 可從同一個 canonical directory（解析符號連結後的目錄）啟動一或多個 agent，讓它們共用一個 switch session：
+
+```bash
+easy-herdr cluster claude codex opencode-local "reply with one word: ready"
+easy-herdr cluster claude codex -- hello
+```
+
+第一個 agent 在目前終端機執行。其餘 agent 會優先在目前終端機應用程式開新分頁；分頁指令失敗時，改開新視窗：
+
+| 平台 | 支援分頁的終端機 | 其他終端機 |
+| --- | --- | --- |
+| Linux | Konsole、kitty、WezTerm、GNOME Terminal | 開新視窗，包含 Ghostty |
+| macOS | kitty、WezTerm、iTerm2 | 開新視窗，包含 Terminal.app 與 Ghostty |
+
+kitty 需要啟用 remote control 並設定監聽 socket（`listen_on`，由 `KITTY_LISTEN_ON` 環境變數提供），才能開分頁；沒有 socket 時會開新視窗。只有 `HERDR_SWITCH_TERMINAL` 含非空白指令時，才使用你指定的視窗指令。
+
+可選的 prompt 只會送給第一個 agent。easy-herdr 每 250 ms 檢查一次，偵測到 agent 為 idle 或 done 後，才透過 herdr API 輸入並送出 prompt，最多等待 120 秒。若啟動時出現授權對話框，請在等待期間自行回答。prompt 不會放進 agent 的命令列參數。
+
+- 沒有 `--` 時，最後一個參數若包含空白或上述 agent 名稱字元以外的字元，且不以 `-` 開頭，就視為 prompt。合法的單字名稱一律視為 agent，找不到就報錯。
+- 單字 prompt 請放在 `--` 後，也可在其後輸入多個單字，程式會用空白串成 prompt；`--` 後不能留空，prompt 也不能是空字串或只有空白。
+- 開啟任何終端機前，會先驗證所有 agent。此指令不接受 agent 選項；完整用法請看 `easy-herdr cluster --help`。
 
 ## 與 herdr 的差異
 

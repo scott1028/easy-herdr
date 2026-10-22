@@ -66,13 +66,20 @@ easy-herdr switch codex
 The syntax is:
 
 ```text
-easy-herdr <agent-cli> [agent-name] [-- agent-args...]
+easy-herdr <agent-cli> [agent-args...]
+easy-herdr switch <agent-cli> [agent-name] [-- agent-args...]
 ```
 
-`agent-name` names the agent inside herdr; it is not passed to the agent CLI. Put all agent arguments after `--`. For example, replacing `MODEL` with your model name:
+The shortcut passes every argument to the agent CLI; a single `--` right after `<agent-cli>` is dropped. For example, replacing `MODEL` with your model name:
 
 ```bash
-easy-herdr codex reviewer -- --model MODEL
+easy-herdr codex --model MODEL
+```
+
+To name the agent inside herdr, use `switch`. `agent-name` is not passed to the agent CLI; put agent arguments after `--`:
+
+```bash
+easy-herdr switch codex reviewer -- --model MODEL
 ```
 
 The shortcut accepts an executable on `PATH`, or a bash/zsh function or alias loaded by the interactive shell selected by `$SHELL`. Names may contain ASCII letters, digits, `.`, `_`, `+`, and `-`, and cannot start with `-`. Existing easy-herdr commands take precedence. Builtins and keywords alone do not qualify; unavailable names still print `unknown command: <name>` and exit 2.
@@ -113,6 +120,30 @@ Window titles use the launch-directory label and pane ID, followed by the progra
 ```
 
 💤 idle · ⏳ working · ✅ done · ✋ blocked. There is no icon for unknown status or no agent. **Done** means finished work and stays visible until the next task begins.
+
+## Cluster
+
+On Unix, `cluster` starts one or more agents from the same canonical directory, so they share one switch session:
+
+```bash
+easy-herdr cluster claude codex opencode-local "reply with one word: ready"
+easy-herdr cluster claude codex -- hello
+```
+
+The first agent runs in your current terminal. Each other agent opens in a new tab when the host terminal supports it, falling back to a new window if the tab command fails:
+
+| Platform | Terminals with tab support | Other terminals |
+| --- | --- | --- |
+| Linux | Konsole, kitty, WezTerm, GNOME Terminal | New window, including Ghostty |
+| macOS | kitty, WezTerm, iTerm2 | New window, including Terminal.app and Ghostty |
+
+kitty needs remote control enabled with a listen socket (`listen_on`, exposed as `KITTY_LISTEN_ON`) to open tabs. Without that socket, cluster opens a new window. A nonblank `HERDR_SWITCH_TERMINAL` uses your configured window command instead of tabs.
+
+The optional prompt goes only to the first agent. easy-herdr polls for a detected idle or done agent every 250 ms, then types the prompt and submits it through herdr's API. It waits up to 120 seconds; answer any startup approval dialogs while it waits. The prompt is never passed in agent arguments.
+
+- Without `--`, the final argument is a prompt if it contains spaces or characters outside the agent-name set above and does not start with `-`. Plain names are always agents; unknown names are errors.
+- Use `--` for a one-word prompt, or to join several prompt words. You must provide a prompt after it; empty or whitespace-only prompts are rejected.
+- All agents are validated before any terminal opens. Agent options are not accepted; use `easy-herdr cluster --help` for usage.
 
 ## Differences from herdr
 

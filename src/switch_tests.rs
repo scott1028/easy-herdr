@@ -48,6 +48,33 @@ fn shortcut_names_and_markers_accept_only_supported_commands() {
 
 #[cfg(unix)]
 #[test]
+fn shortcut_argv_passes_agent_arguments_verbatim() {
+    for (args, expected) in [
+        (
+            vec!["agent-switch", "opencode", "--url", "U", "--api-key", "K"],
+            vec!["agent-switch", "opencode", "--url", "U", "--api-key", "K"],
+        ),
+        (
+            vec!["codex", "--", "--model", "x"],
+            vec!["codex", "--model", "x"],
+        ),
+        (
+            vec!["codex", "reviewer", "--", "--model", "x"],
+            vec!["codex", "reviewer", "--", "--model", "x"],
+        ),
+        (
+            vec!["opencode", "--session", "s", "--help"],
+            vec!["opencode", "--session", "s", "--help"],
+        ),
+        (vec!["codex"], vec!["codex"]),
+    ] {
+        let args: Vec<String> = args.into_iter().map(str::to_owned).collect();
+        assert_eq!(get_shortcut_argv(&args), expected, "{args:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn launch_argv_uses_eval_and_preserves_other_shells() {
     let argv = vec!["codex-personal".into(), "--model".into(), "x".into()];
     for shell in ["/bin/bash", "/usr/bin/zsh"] {

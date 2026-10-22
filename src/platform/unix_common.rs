@@ -1,5 +1,42 @@
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+#[path = "unix_tab_tdd.rs"]
+mod tab_tdd;
+
+pub(super) fn run_tab_command(argv: &[String], cwd: &Path) -> bool {
+    use std::os::unix::process::CommandExt as _;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let Ok(mut child) = Command::new(&argv[0])
+        .args(&argv[1..])
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+    else {
+        return false;
+    };
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Err(_) => return false,
+            Ok(None) if Instant::now() >= deadline => {
+                // Some terminals keep their launcher alive as the new instance.
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                return true;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+}
+
 pub(crate) struct ChildPipe(std::fs::File);
 
 impl ChildPipe {

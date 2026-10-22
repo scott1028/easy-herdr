@@ -239,6 +239,50 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+#[cfg(test)]
+#[path = "macos_tab_tdd.rs"]
+mod tab_tdd;
+
+fn terminal_tab_command(
+    spec: &TerminalWindowSpec,
+    env: impl Fn(&str) -> Option<String>,
+) -> Option<Vec<String>> {
+    if env(TERMINAL_OVERRIDE_ENV)
+        .filter(|prefix| !prefix.trim().is_empty())
+        .is_some()
+    {
+        return None;
+    }
+    let cwd = spec.cwd.display().to_string();
+    let program = env("TERM_PROGRAM").unwrap_or_default();
+    let prefix = match program.as_str() {
+        "WezTerm" => "wezterm cli spawn --cwd {cwd} --",
+        "kitty" if env("KITTY_LISTEN_ON").is_some() => "kitty @ launch --type=tab --cwd {cwd}",
+        "iTerm.app" => {
+            let command = format!(
+                "cd {} && exec {}",
+                shell_quote(&cwd),
+                spec.argv
+                    .iter()
+                    .map(|arg| shell_quote(arg))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            let command = command.replace('\\', "\\\\").replace('"', "\\\"");
+            let script = format!("tell application \"iTerm\"\nactivate\ntell current window\nset newTab to (create tab with default profile)\ntell current session of newTab to write text \"{command}\"\nend tell\nend tell");
+            return Some(vec!["osascript".into(), "-e".into(), script]);
+        }
+        _ => return None,
+    };
+    Some(
+        prefix
+            .split_whitespace()
+            .map(|arg| arg.replace("{cwd}", &cwd))
+            .chain(spec.argv.clone())
+            .collect(),
+    )
+}
+
 fn terminal_window_command(
     spec: &TerminalWindowSpec,
     env: impl Fn(&str) -> Option<String>,
@@ -285,6 +329,16 @@ fn terminal_window_command(
         .map(|arg| arg.replace("{cwd}", &cwd))
         .chain(spec.argv.clone())
         .collect()
+}
+
+pub(crate) fn open_terminal_tab(spec: &TerminalWindowSpec) -> std::io::Result<()> {
+    if terminal_tab_command(spec, |key| std::env::var(key).ok())
+        .is_some_and(|argv| super::unix_common::run_tab_command(&argv, &spec.cwd))
+    {
+        Ok(())
+    } else {
+        open_terminal_window(spec)
+    }
 }
 
 pub(crate) fn open_terminal_window(spec: &TerminalWindowSpec) -> std::io::Result<()> {

@@ -97,6 +97,16 @@ pub(crate) fn maybe_run_machine(args: &[String]) -> Option<std::io::Result<Comma
     target::maybe_run(args)
 }
 
+/// Herdr command names, which take precedence over agent shortcuts.
+#[cfg(unix)]
+pub(crate) fn get_is_command(name: &str) -> bool {
+    // Commands dispatched in main.rs, outside the CLI spec.
+    matches!(
+        name,
+        "switch" | "cluster" | "install" | "client" | "remote-api-bridge" | "remote-client-bridge"
+    ) || spec::command().find_subcommand(name).is_some()
+}
+
 pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
     let Some(command) = args.get(1).map(|arg| arg.as_str()) else {
         return Ok(CommandOutcome::NotCli);
@@ -1020,6 +1030,26 @@ fn _print_json<T: Serialize>(value: &T) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn herdr_commands_take_precedence_over_agent_shortcuts() {
+        for name in [
+            "agent",
+            "pane",
+            "server",
+            "completions",
+            "install",
+            "switch",
+            "cluster",
+            "client",
+        ] {
+            assert!(super::get_is_command(name), "{name}");
+        }
+        for name in ["codex", "agent-switch", "opencode"] {
+            assert!(!super::get_is_command(name), "{name}");
+        }
+    }
+
     #[test]
     fn parses_channel_set_argument() {
         assert_eq!(

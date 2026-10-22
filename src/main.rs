@@ -524,6 +524,14 @@ fn main() -> io::Result<()> {
     if let Some(code) = switch::maybe_run(&raw_args) {
         std::process::exit(code);
     }
+    #[cfg(unix)]
+    if let Some(code) = switch::maybe_run_cluster(&raw_args) {
+        std::process::exit(code);
+    }
+    #[cfg(unix)]
+    if let Some(code) = switch::maybe_run_shortcut(&raw_args) {
+        std::process::exit(code);
+    }
     #[cfg(windows)]
     if let Some(result) = platform::maybe_activate_desktop_notification(&raw_args) {
         return result;
@@ -609,7 +617,9 @@ fn main() -> io::Result<()> {
         println!("       easy-herdr --remote <ssh-target> [--session <name>]");
         println!("       herdr session attach <name>");
         println!("       easy-herdr switch <agent-cli> [agent-name] [-- agent-args...]");
-        println!("       easy-herdr <agent-cli> [agent-name] [-- agent-args...]");
+        #[cfg(unix)]
+        println!("       easy-herdr cluster <agent-cli>... [prompt]");
+        println!("       easy-herdr <agent-cli> [agent-args...]");
         println!("       easy-herdr install [--dir DIR]");
         println!("       herdr completion zsh");
         println!("       herdr update [--handoff]");
@@ -636,6 +646,11 @@ fn main() -> io::Result<()> {
             (
                 "herdr switch <agent-cli> [name]",
                 "Run an agent as an invisible pane grouped by directory",
+            ),
+            #[cfg(unix)]
+            (
+                "easy-herdr cluster <agent-cli>... [prompt]",
+                "Run several agents in terminal tabs or windows",
             ),
             (
                 "herdr status [server|client]",
@@ -761,7 +776,7 @@ fn main() -> io::Result<()> {
         "--help",
         "-h",
     ];
-    for (index, arg) in args[1..].iter().enumerate() {
+    for arg in &args[1..] {
         let arg_name = arg.split_once('=').map(|(name, _)| name).unwrap_or(arg);
         if arg.starts_with('-') && !known_flags.contains(&arg_name) {
             eprintln!("unknown option: {arg}");
@@ -787,14 +802,6 @@ fn main() -> io::Result<()> {
             ]
             .contains(&arg.as_str())
         {
-            #[cfg(unix)]
-            if index == 0 {
-                if let Some(code) = switch::maybe_run_shortcut(&args) {
-                    std::process::exit(code);
-                }
-            }
-            #[cfg(not(unix))]
-            let _ = index;
             eprintln!("unknown command: {arg}");
             eprintln!("run 'easy-herdr --help' for usage");
             std::process::exit(2);

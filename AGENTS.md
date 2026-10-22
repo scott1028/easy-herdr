@@ -256,6 +256,13 @@ Do not use GitHub closing keywords like `fixes #<issue-number>`, `closes #<issue
 - Integration asset versions (`HERDR_INTEGRATION_VERSION` markers and matching `*_INTEGRATION_VERSION` constants) are migration versions relative to the latest released tag, not per-commit counters on `master`. If an integration asset changes multiple times between releases, bump it once from the version in the latest release.
 - When changing the server/client wire protocol, compare `src/protocol/wire.rs::PROTOCOL_VERSION` against protocols published in both stable and preview releases. Bump it when the current source protocol has already been published in either channel and the wire format changes incompatibly. Do not bump it again for multiple incompatible changes before that protocol is published. Update hardcoded protocol expectations and manual protocol fixtures in tests.
 
+## easy-herdr Fork Versioning
+
+easy-herdr versions have four parts, `0.9.5.N`. The first three parts match
+the upstream herdr release the fork is based on, and the version in
+`Cargo.toml` stays at those three parts. A fork release only increments `N`.
+For example, the release after `easy-herdr-v0.9.5.1` is `easy-herdr-v0.9.5.2`.
+
 ## Release Channels
 
 This section is maintainer-only for release actions. If the acting GitHub
