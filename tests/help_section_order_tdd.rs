@@ -1,7 +1,6 @@
-#![cfg(unix)]
-
 use std::process::Command;
 
+#[cfg(unix)]
 fn assert_section_ends_with(help: &str, heading: &str, fork_lines: &[&str]) {
     let section = help
         .split("\n\n")
@@ -21,6 +20,7 @@ fn assert_section_ends_with(help: &str, heading: &str, fork_lines: &[&str]) {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn root_help_lists_easy_herdr_additions_at_section_end() {
     let output = Command::new(env!("CARGO_BIN_EXE_easy-herdr"))
@@ -59,4 +59,25 @@ fn root_help_lists_easy_herdr_additions_at_section_end() {
         ],
     );
     assert!(!help.contains("herdr update"), "{help}");
+}
+
+#[cfg(windows)]
+#[test]
+fn root_help_omits_unix_only_fork_commands_on_windows() {
+    let output = Command::new(env!("CARGO_BIN_EXE_easy-herdr"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let help = String::from_utf8(output.stdout).unwrap();
+
+    for unsupported in [
+        "easy-herdr switch",
+        "easy-herdr cluster",
+        "easy-herdr <agent-cli>",
+        "easy-herdr install",
+        "Agent shortcuts accept",
+    ] {
+        assert!(!help.contains(unsupported), "{help}");
+    }
 }

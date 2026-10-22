@@ -633,11 +633,13 @@ fn main() -> io::Result<()> {
         println!("       herdr pane <subcommand> ...");
         println!("       herdr session <subcommand> ...");
         println!("       herdr integration <subcommand> ...");
+        #[cfg(unix)]
         println!("       easy-herdr switch <agent-cli> [agent-name] [-- agent-args...]");
         #[cfg(unix)]
         println!("       easy-herdr cluster <agent-cli>... [prompt]");
         #[cfg(unix)]
         println!("       easy-herdr <agent-cli> [agent-args...]");
+        #[cfg(unix)]
         println!("       easy-herdr install [--dir DIR]");
         println!();
         println!("Common commands:");
@@ -702,6 +704,7 @@ fn main() -> io::Result<()> {
                 "herdr integration <subcommand>",
                 "Manage built-in agent integrations",
             ),
+            #[cfg(unix)]
             (
                 "easy-herdr switch <agent-cli> [agent-name]",
                 "Run an agent as an invisible pane grouped by directory",
@@ -716,6 +719,7 @@ fn main() -> io::Result<()> {
                 "easy-herdr <agent-cli> [agent-args...]",
                 "Run an agent CLI in switch mode with all its arguments",
             ),
+            #[cfg(unix)]
             (
                 "easy-herdr install [--dir DIR]",
                 "Install the herdr command symlink",
@@ -743,6 +747,7 @@ fn main() -> io::Result<()> {
         println!("Logs:   {}", logging::help_log_paths_summary());
         println!("Env:    HERDR_CONFIG_PATH overrides config file path");
         println!("Home:   https://herdr.dev");
+        #[cfg(unix)]
         println!("Agent shortcuts accept PATH commands and bash/zsh functions or aliases.");
         println!("{SELF_UPDATE_NOTICE}");
         println!();
