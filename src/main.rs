@@ -617,7 +617,6 @@ fn main() -> io::Result<()> {
         println!("       easy-herdr --remote <ssh-target> [--session <name>]");
         println!("       herdr session attach <name>");
         println!("       herdr completion zsh");
-        println!("       herdr update [--handoff]");
         println!("       herdr channel set <stable|preview>");
         println!("       herdr machine <subcommand> ...");
         println!("       herdr server stop");
@@ -711,6 +710,11 @@ fn main() -> io::Result<()> {
             (
                 "easy-herdr cluster <agent-cli>... [prompt]",
                 "Run several agents in terminal tabs or windows",
+            ),
+            #[cfg(unix)]
+            (
+                "easy-herdr <agent-cli> [agent-args...]",
+                "Run an agent CLI in switch mode with all its arguments",
             ),
             (
                 "easy-herdr install [--dir DIR]",

@@ -46,6 +46,7 @@ fn root_help_lists_easy_herdr_additions_at_section_end() {
         &[
             "easy-herdr switch <agent-cli> [agent-name]",
             "easy-herdr cluster <agent-cli>... [prompt]",
+            "easy-herdr <agent-cli> [agent-args...]",
             "easy-herdr install [--dir DIR]",
         ],
     );
@@ -57,4 +58,5 @@ fn root_help_lists_easy_herdr_additions_at_section_end() {
             "easy-herdr does not update itself",
         ],
     );
+    assert!(!help.contains("herdr update"), "{help}");
 }
