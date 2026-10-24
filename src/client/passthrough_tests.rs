@@ -17,17 +17,3 @@ fn only_shutdown_refusals_are_retried() {
         "passthrough spawn failed: invalid command"
     ));
 }
-
-#[test]
-fn title_group_is_the_cluster_pid_or_the_server_pid() {
-    assert_eq!(
-        get_title_group(Some(PassthroughGroup::Cluster(12345)), Some(39001)),
-        Some(12345)
-    );
-    assert_eq!(
-        get_title_group(Some(PassthroughGroup::Server), Some(39001)),
-        Some(39001)
-    );
-    assert_eq!(get_title_group(Some(PassthroughGroup::Server), None), None);
-    assert_eq!(get_title_group(None, Some(39001)), None);
-}

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn status_titles_compose_symbols_and_reuse_the_last_program_title() {
-    let mut rewriter = TitleRewriter::new("herdr · w1:p2", None, None);
+    let mut rewriter = TitleRewriter::new("herdr · w1:p2", None, None, None);
     assert_eq!(
         rewriter.status_title(),
         "\x1b]2;herdr · w1:p2\x07".as_bytes()
@@ -44,7 +44,7 @@ fn title_reemission_waits_for_complete_control_sequences_and_utf8() {
         (b"\x1b_opaque", b"\x1b\\"),
         (b"\xe2\x97", b"\x90"),
     ] {
-        let mut rewriter = TitleRewriter::new("herdr · w1:p2", None, None);
+        let mut rewriter = TitleRewriter::new("herdr · w1:p2", None, None, None);
         let mut out = Vec::new();
         assert!(rewriter.at_ground());
         rewriter.rewrite(start, &mut out);
@@ -60,7 +60,7 @@ fn rewrites_bel_and_st_titles_preserving_the_osc_kind() {
         for terminator in ["\x07", "\x1b\\"] {
             let input = format!("\x1b]{ps};Fix CI{terminator}");
             let expected = format!("\x1b]{ps};herdr · w1:p2 — Fix CI{terminator}");
-            let mut rewriter = TitleRewriter::new("herdr · w1:p2", None, None);
+            let mut rewriter = TitleRewriter::new("herdr · w1:p2", None, None, None);
             let mut out = Vec::new();
             rewriter.rewrite(input.as_bytes(), &mut out);
             assert_eq!(out, expected.as_bytes());
@@ -75,7 +75,7 @@ fn rewrites_titles_split_at_every_byte_boundary() {
             let input = format!("\x1b]{ps};◑ Fix CI on macOS{terminator}");
             let expected = format!("\x1b]{ps};herdr · w1:p2 — ◑ Fix CI on macOS{terminator}");
             for split in 0..=input.len() {
-                let mut rewriter = TitleRewriter::new("herdr · w1:p2", None, None);
+                let mut rewriter = TitleRewriter::new("herdr · w1:p2", None, None, None);
                 let mut out = Vec::new();
                 rewriter.rewrite(&input.as_bytes()[..split], &mut out);
                 rewriter.rewrite(&input.as_bytes()[split..], &mut out);
@@ -89,7 +89,7 @@ fn rewrites_titles_split_at_every_byte_boundary() {
 fn rewrites_empty_titles_without_a_separator() {
     for ps in [0, 2] {
         for terminator in ["\x07", "\x1b\\"] {
-            let mut rewriter = TitleRewriter::new("herdr · w1:p2", None, None);
+            let mut rewriter = TitleRewriter::new("herdr · w1:p2", None, None, None);
             let mut out = Vec::new();
             rewriter.rewrite(format!("\x1b]{ps};{terminator}").as_bytes(), &mut out);
             assert_eq!(
@@ -104,7 +104,7 @@ fn rewrites_empty_titles_without_a_separator() {
 fn preserves_other_osc_csi_text_and_lone_esc() {
     let input = b"text\xff\x1b[31mred\x1b[0m\x1b]1;icon\x07\x1b]7;file:///tmp\x1b\\\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x07\x1b]52;c;opaque\x1b]2;literal\x07\x1b\x1b";
     for chunk_size in [1, input.len()] {
-        let mut rewriter = TitleRewriter::new("herdr · w1:p2", None, None);
+        let mut rewriter = TitleRewriter::new("herdr · w1:p2", None, None, None);
         let mut out = Vec::new();
         for chunk in input.chunks(chunk_size) {
             rewriter.rewrite(chunk, &mut out);
@@ -119,7 +119,7 @@ fn oversized_pending_is_forwarded_until_its_terminator() {
     for terminator in [b"\x07".as_slice(), b"\x1b\\"] {
         let mut input = b"\x1b]2;".to_vec();
         input.resize(4096, b'x');
-        let mut rewriter = TitleRewriter::new("herdr · w1:p2", None, None);
+        let mut rewriter = TitleRewriter::new("herdr · w1:p2", None, None, None);
         let mut out = Vec::new();
         rewriter.rewrite(&input, &mut out);
         assert!(out.is_empty());
@@ -142,7 +142,7 @@ fn oversized_pending_is_forwarded_until_its_terminator() {
 
 #[test]
 fn rewrites_two_titles_in_one_chunk() {
-    let mut rewriter = TitleRewriter::new("herdr · w1:p2", None, None);
+    let mut rewriter = TitleRewriter::new("herdr · w1:p2", None, None, None);
     let mut out = Vec::new();
     rewriter.rewrite(
         b"before\x1b]0;one\x07between\x1b]2;two\x1b\\after",
@@ -157,7 +157,7 @@ fn rewrites_two_titles_in_one_chunk() {
 
 #[test]
 fn sanitizes_the_prefix_before_rewriting() {
-    let mut rewriter = TitleRewriter::new(" \x1bherdr\x07\n · w1:p2 ", None, None);
+    let mut rewriter = TitleRewriter::new(" \x1bherdr\x07\n · w1:p2 ", None, None, None);
     let mut out = Vec::new();
     rewriter.rewrite(b"\x1b]2;title\x07", &mut out);
     assert_eq!(out, "\x1b]2;herdr · w1:p2 — title\x07".as_bytes());
@@ -171,7 +171,7 @@ fn flushes_unfinished_sequences_unchanged_at_the_end() {
         b"\x1b]0;",
         b"\x1b]2;unfinished",
     ] {
-        let mut rewriter = TitleRewriter::new("herdr · w1:p2", None, None);
+        let mut rewriter = TitleRewriter::new("herdr · w1:p2", None, None, None);
         let mut out = Vec::new();
         rewriter.rewrite(input, &mut out);
         rewriter.finish(&mut out);
@@ -180,14 +180,42 @@ fn flushes_unfinished_sequences_unchanged_at_the_end() {
 }
 
 #[test]
-fn role_and_group_tags_follow_the_prefix_in_every_title() {
-    for (role, group, tag) in [
-        (Some("planner"), Some(12345), " (planner, group: 12345)"),
-        (None, Some(12345), " (group: 12345)"),
-        (Some("planner"), None, " (planner)"),
-        (None, None, ""),
+fn role_herdr_pid_and_cluster_tags_follow_the_prefix_in_every_title() {
+    for (role, herdr_pid, cluster, tag) in [
+        (
+            Some("planner"),
+            Some(39001),
+            Some(12345),
+            " (planner, herdr-pid: 39001, cluster: 12345)",
+        ),
+        (
+            None,
+            Some(39001),
+            Some(12345),
+            " (herdr-pid: 39001, cluster: 12345)",
+        ),
+        (
+            Some("planner"),
+            Some(39001),
+            None,
+            " (planner, herdr-pid: 39001)",
+        ),
+        (None, Some(39001), None, " (herdr-pid: 39001)"),
+        (
+            Some("planner"),
+            None,
+            Some(12345),
+            " (planner, cluster: 12345)",
+        ),
+        (Some("planner"), None, None, " (planner)"),
+        (None, None, None, ""),
     ] {
-        let mut rewriter = TitleRewriter::new("easy-herdr · w1:p1", group, role.map(str::to_owned));
+        let mut rewriter = TitleRewriter::new(
+            "easy-herdr · w1:p1",
+            herdr_pid,
+            cluster,
+            role.map(str::to_owned),
+        );
         assert_eq!(rewriter.label(), format!("easy-herdr · w1:p1{tag}"));
         assert_eq!(
             rewriter.status_title(),
@@ -209,18 +237,24 @@ fn role_and_group_tags_follow_the_prefix_in_every_title() {
 
 #[test]
 fn set_role_reports_changes_and_retags_the_title() {
-    let mut rewriter = TitleRewriter::new("easy-herdr · w1:p1", Some(7), None);
+    let mut rewriter = TitleRewriter::new("easy-herdr · w1:p1", Some(39001), Some(7), None);
     assert!(!rewriter.set_role(None));
     assert!(rewriter.set_role(Some("planner".into())));
     assert!(!rewriter.set_role(Some("planner".into())));
-    assert_eq!(rewriter.label(), "easy-herdr · w1:p1 (planner, group: 7)");
+    assert_eq!(
+        rewriter.label(),
+        "easy-herdr · w1:p1 (planner, herdr-pid: 39001, cluster: 7)"
+    );
     assert!(rewriter.set_role(Some("reviewer".into())));
     assert_eq!(
         rewriter.status_title(),
-        "\x1b]2;easy-herdr · w1:p1 (reviewer, group: 7)\x07".as_bytes()
+        "\x1b]2;easy-herdr · w1:p1 (reviewer, herdr-pid: 39001, cluster: 7)\x07".as_bytes()
     );
     assert!(rewriter.set_role(None));
-    assert_eq!(rewriter.label(), "easy-herdr · w1:p1 (group: 7)");
+    assert_eq!(
+        rewriter.label(),
+        "easy-herdr · w1:p1 (herdr-pid: 39001, cluster: 7)"
+    );
 }
 
 #[test]
@@ -228,9 +262,13 @@ fn sanitizes_control_characters_in_the_role() {
     let rewriter = TitleRewriter::new(
         "easy-herdr · w1:p1",
         Some(7),
+        None,
         Some(" \x1bplan\x07ner\n ".into()),
     );
-    assert_eq!(rewriter.label(), "easy-herdr · w1:p1 (planner, group: 7)");
-    let rewriter = TitleRewriter::new("easy-herdr · w1:p1", None, Some("\x1b\x07\t".into()));
+    assert_eq!(
+        rewriter.label(),
+        "easy-herdr · w1:p1 (planner, herdr-pid: 7)"
+    );
+    let rewriter = TitleRewriter::new("easy-herdr · w1:p1", None, None, Some("\x1b\x07\t".into()));
     assert_eq!(rewriter.label(), "easy-herdr · w1:p1");
 }

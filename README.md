@@ -124,10 +124,10 @@ This keeps the default Codex/OpenCode tool calls attached to the launch session'
 Window titles use the launch-directory label and pane ID, an optional tag, and the program's title when it supplies one:
 
 ```text
-{status} {dir} · {pane_id} ({role}, group: {pid}) — {program title}
+{status} {dir} · {pane_id} ({role}, herdr-pid: {pid}, cluster: {pid}) — {program title}
 ```
 
-The tag shows the agent name and a group: the cluster's process ID in windows that `cluster` opens, or the process ID of the session's herdr server in other switch windows. Switch shell windows, which agents open when they create panes, tabs, or workspaces, show no group. A part that does not apply is left out, and so is the whole tag when neither does.
+The tag shows the agent name, `herdr-pid`, and `cluster`. `herdr-pid` is the process ID of the launch directory's herdr server, so it is the same in every window from that directory, including the switch shell windows that agents open when they create panes, tabs, or workspaces. When that server exits while idle, the next launch starts a new one, and windows started after that show its process ID. `cluster` is the cluster's process ID and appears only in windows that `cluster` opens. It is the same number as in the cluster's end line, the timeout log name, and `kill <pid>`. A part that does not apply is left out, and so is the whole tag when none does.
 
 💤 idle · ⏳ working · ✅ done · ✋ blocked. There is no icon for unknown status or no agent. **Done** means finished work and stays visible until the next task begins.
 
@@ -244,13 +244,13 @@ easy-herdr cluster 12345: timed out after 2h; closed 4 agent panes
 
 ### Cluster window titles
 
-Every window that cluster opens shows its group, which is the cluster's process ID. Once an agent has a name, its role shows too:
+Every window that cluster opens shows the herdr server's process ID as `herdr-pid` and the cluster's process ID as `cluster`. Once an agent has a name, its role shows too:
 
 ```text
-easy-herdr · w1:p1 (planner, group: 12345)
+easy-herdr · w1:p1 (planner, herdr-pid: 39001, cluster: 12345)
 ```
 
-The role is the herdr agent name. Cluster windows get it from `easy-herdr agent rename <pane> <name>`, for example when the planner renames itself, and the title follows a rename within about 2 s. `easy-herdr switch <cli> <name>` names a plain switch window instead, which shows `(name, group: <server pid>)`. That group is the process ID of the herdr server for the launch directory, so every plain switch window started there shows the same group. When the server exits while idle, the next launch starts a new one, and windows started after that show its process ID.
+The role is the herdr agent name. Cluster windows get it from `easy-herdr agent rename <pane> <name>`, for example when the planner renames itself, and the title follows a rename within about 2 s. `easy-herdr switch <cli> <name>` names a plain switch window instead, which shows `(name, herdr-pid: <pid>)` without `cluster`.
 
 ### Before you rely on auto exit
 

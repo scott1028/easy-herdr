@@ -10,9 +10,10 @@ enum EscapeState {
 
 pub(super) struct TitleRewriter {
     prefix: String,
-    group: Option<u32>,
+    herdr_pid: Option<u32>,
+    cluster: Option<u32>,
     role: Option<String>,
-    /// ` (role, group: G)`, ` (group: G)`, ` (role)` or empty.
+    /// ` (role, herdr-pid: P, cluster: C)` without the absent parts, or empty when none apply.
     tag: String,
     pending: Vec<u8>,
     passthrough_osc: bool,
@@ -39,7 +40,7 @@ impl TitleRewriter {
             return false;
         }
         self.role = role;
-        self.tag = get_tag(self.role.as_deref(), self.group);
+        self.tag = get_tag(self.role.as_deref(), self.herdr_pid, self.cluster);
         true
     }
 
@@ -68,11 +69,17 @@ impl TitleRewriter {
         }
     }
 
-    pub(super) fn new(prefix: &str, group: Option<u32>, role: Option<String>) -> Self {
+    pub(super) fn new(
+        prefix: &str,
+        herdr_pid: Option<u32>,
+        cluster: Option<u32>,
+        role: Option<String>,
+    ) -> Self {
         Self {
             prefix: crate::config::sanitize_window_title_text(prefix).unwrap_or_default(),
-            group,
-            tag: get_tag(role.as_deref(), group),
+            herdr_pid,
+            cluster,
+            tag: get_tag(role.as_deref(), herdr_pid, cluster),
             role,
             pending: Vec::new(),
             passthrough_osc: false,
@@ -192,14 +199,19 @@ impl TitleRewriter {
 }
 
 /// The role is sanitized like the prefix; a role with no visible text counts as none.
-fn get_tag(role: Option<&str>, group: Option<u32>) -> String {
-    let role = role.and_then(crate::config::sanitize_window_title_text);
-    match (role, group) {
-        (Some(role), Some(group)) => format!(" ({role}, group: {group})"),
-        (None, Some(group)) => format!(" (group: {group})"),
-        (Some(role), None) => format!(" ({role})"),
-        (None, None) => String::new(),
+fn get_tag(role: Option<&str>, herdr_pid: Option<u32>, cluster: Option<u32>) -> String {
+    let parts: Vec<String> = [
+        role.and_then(crate::config::sanitize_window_title_text),
+        herdr_pid.map(|pid| format!("herdr-pid: {pid}")),
+        cluster.map(|pid| format!("cluster: {pid}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if parts.is_empty() {
+        return String::new();
     }
+    format!(" ({})", parts.join(", "))
 }
 
 #[cfg(test)]

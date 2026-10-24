@@ -72,7 +72,7 @@ pub(super) fn launch(
             label.clone(),
             Some(crate::client::PassthroughTitle {
                 label: super::switch_session_label(&session),
-                group: None,
+                cluster: None,
             }),
             Some(Box::new(move |started| {
                 if let Err(err) = write_ready_file(&ready_file, &started.pane_id) {

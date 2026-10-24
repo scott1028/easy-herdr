@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 
 use interprocess::TryClone as _;
 
-use super::startup::PassthroughGroup;
 use super::terminal_geometry::initial_terminal_geometry;
 use super::{do_handshake, init_logging, write_to_server, HandshakePixelCapabilities};
 use crate::api::schema::AgentStatus;
@@ -50,14 +49,6 @@ fn rename_notice(requested: Option<&str>, actual: Option<&str>) -> Option<String
             Some(format!("agent name {requested} is taken; using {actual}"))
         }
         _ => None,
-    }
-}
-
-/// The group pid a window title shows: a cluster's leader pid or the session server's pid.
-fn get_title_group(group: Option<PassthroughGroup>, server_pid: Option<u32>) -> Option<u32> {
-    match group? {
-        PassthroughGroup::Cluster(pid) => Some(pid),
-        PassthroughGroup::Server => server_pid,
     }
 }
 
@@ -132,7 +123,8 @@ pub(crate) fn run_passthrough(
     let title = title.map(|title| {
         TitleRewriter::new(
             &format!("{} · {}", title.label, started.pane_id),
-            get_title_group(title.group, started.server_pid),
+            started.server_pid,
+            title.cluster,
             started.agent_name.clone(),
         )
     });
