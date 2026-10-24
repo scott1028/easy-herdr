@@ -31,6 +31,7 @@ fn server_events_round_trip_including_non_utf8_output() {
         terminal_id: "term_1".into(),
         pane_id: "w1:p1".into(),
         agent_name: Some("rev-2".into()),
+        server_pid: Some(39001),
     };
     let bytes = b"\x1b[?1049h\xff\xfe hi".to_vec();
 
@@ -62,4 +63,19 @@ fn spawn_request_without_a_program_name_still_decodes() {
     let data = r#"{"argv":["codex"],"cwd":"/w","env":[],"agent_name":null}"#;
 
     assert_eq!(decode_spawn(data).unwrap().program_name, None);
+}
+
+#[test]
+fn started_without_a_server_pid_still_decodes() {
+    let data = r#"{"terminal_id":"term_1","pane_id":"w1:p1","agent_name":null}"#;
+
+    assert_eq!(
+        decode_event(STARTED_KIND, data),
+        Some(Ok(PassthroughEvent::Started(PassthroughStarted {
+            terminal_id: "term_1".into(),
+            pane_id: "w1:p1".into(),
+            agent_name: None,
+            server_pid: None,
+        })))
+    );
 }

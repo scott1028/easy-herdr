@@ -38,6 +38,9 @@ pub(crate) struct PassthroughStarted {
     pub(crate) pane_id: String,
     /// Actual managed agent name after conflict suffixing.
     pub(crate) agent_name: Option<String>,
+    /// The session server's process ID.
+    #[serde(default)]
+    pub(crate) server_pid: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

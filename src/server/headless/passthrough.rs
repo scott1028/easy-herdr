@@ -142,6 +142,7 @@ impl HeadlessServer {
             terminal_id,
             pane_id: spawned.pane_id,
             agent_name: spawned.agent_name,
+            server_pid: Some(std::process::id()),
         };
         match crate::protocol::passthrough::started_message(&started) {
             Ok(message) => {

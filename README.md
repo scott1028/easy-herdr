@@ -127,7 +127,7 @@ Window titles use the launch-directory label and pane ID, an optional tag, and t
 {status} {dir} · {pane_id} ({role}, group: {pid}) — {program title}
 ```
 
-The tag shows the agent name and, for windows that `cluster` opens, the cluster's process ID. A part that does not apply is left out, and so is the whole tag when neither does.
+The tag shows the agent name and a group: the cluster's process ID in windows that `cluster` opens, or the process ID of the session's herdr server in other switch windows. Switch shell windows, which agents open when they create panes, tabs, or workspaces, show no group. A part that does not apply is left out, and so is the whole tag when neither does.
 
 💤 idle · ⏳ working · ✅ done · ✋ blocked. There is no icon for unknown status or no agent. **Done** means finished work and stays visible until the next task begins.
 
@@ -250,7 +250,7 @@ Every window that cluster opens shows its group, which is the cluster's process 
 easy-herdr · w1:p1 (planner, group: 12345)
 ```
 
-The role is the herdr agent name. Cluster windows get it from `easy-herdr agent rename <pane> <name>`, for example when the planner renames itself, and the title follows a rename within about 2 s. `easy-herdr switch <cli> <name>` names a plain switch window instead, which shows `(name)` without a group.
+The role is the herdr agent name. Cluster windows get it from `easy-herdr agent rename <pane> <name>`, for example when the planner renames itself, and the title follows a rename within about 2 s. `easy-herdr switch <cli> <name>` names a plain switch window instead, which shows `(name, group: <server pid>)`. That group is the process ID of the herdr server for the launch directory, so every plain switch window started there shows the same group. When the server exits while idle, the next launch starts a new one, and windows started after that show its process ID.
 
 ### Before you rely on auto exit
 

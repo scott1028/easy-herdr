@@ -119,6 +119,7 @@ async fn spawn_announces_pane_before_streaming_its_output() {
     match messages.first().and_then(passthrough_event) {
         Some(PassthroughEvent::Started(started)) => {
             assert_eq!(started.agent_name.as_deref(), Some("rev"));
+            assert_eq!(started.server_pid, Some(std::process::id()));
         }
         other => panic!("expected PassthroughStarted first, got {other:?}"),
     }

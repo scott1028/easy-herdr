@@ -3,12 +3,22 @@ use super::*;
 pub(super) type PassthroughStartedCallback =
     Box<dyn FnOnce(&crate::protocol::passthrough::PassthroughStarted)>;
 
-/// Window title of a passthrough client: `<label> · <pane id>`, tagged with its cluster group.
+/// Window title of a passthrough client: `<label> · <pane id>`, tagged with its group.
 // The Windows passthrough stub never reads the title.
 #[cfg_attr(windows, allow(dead_code))]
 pub(crate) struct PassthroughTitle {
     pub(crate) label: String,
-    pub(crate) group: Option<u32>,
+    pub(crate) group: Option<PassthroughGroup>,
+}
+
+/// The group a passthrough window title shows.
+// The Windows passthrough stub never reads the group.
+#[cfg_attr(windows, allow(dead_code))]
+pub(crate) enum PassthroughGroup {
+    /// A cluster's leader pid.
+    Cluster(u32),
+    /// The session server's pid, for plain switch launches.
+    Server,
 }
 
 /// Runs the thin client and enters the main event loop.

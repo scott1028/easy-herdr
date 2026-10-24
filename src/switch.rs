@@ -10,6 +10,8 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
+use crate::client::PassthroughGroup;
+
 #[cfg(unix)]
 mod agent_home;
 pub(crate) mod cli_window;
@@ -258,6 +260,10 @@ fn launch(
             .and_then(|cluster| cluster::get_started_callback(cluster, &stop));
         #[cfg(not(unix))]
         let on_started = None;
+        let group = match &cluster {
+            Some(cluster) => PassthroughGroup::Cluster(cluster.group()),
+            None => PassthroughGroup::Server,
+        };
         crate::client::run_passthrough(
             argv.clone(),
             cwd.clone(),
@@ -266,7 +272,7 @@ fn launch(
             program_name.clone(),
             Some(crate::client::PassthroughTitle {
                 label: switch_session_label(&session),
-                group: cluster.as_ref().map(ClusterLaunch::group),
+                group: Some(group),
             }),
             on_started,
             Some(stop.clone()),

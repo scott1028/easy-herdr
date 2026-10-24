@@ -119,7 +119,7 @@ HERDR_SWITCH_TERMINAL="kitty" easy-herdr codex
 {status} {dir} · {pane_id} ({role}, group: {pid}) — {program title}
 ```
 
-括號標籤顯示 agent 名稱；由 `cluster` 開的視窗，還會加上 cluster 的 process ID。用不到的部分不顯示，兩者都沒有時，整個括號也不顯示。
+括號標籤顯示 agent 名稱與群組：由 `cluster` 開的視窗，群組是 cluster 的 process ID；其他 switch 視窗則是該 session 的 herdr server 的 process ID。agent 建立 pane、tab 或 workspace 時開出的 switch shell 視窗不顯示群組。用不到的部分不顯示，兩者都沒有時，整個括號也不顯示。
 
 💤 閒置 · ⏳ 工作中 · ✅ 完成 · ✋ 等待回應。狀態未知或沒有 agent 時不顯示圖示。**完成**表示工作已結束，會保持顯示直到下一個任務開始。
 
@@ -242,7 +242,7 @@ cluster 開的每個視窗都會顯示群組，也就是 cluster 的 process ID�
 easy-herdr · w1:p1 (planner, group: 12345)
 ```
 
-角色就是 herdr 的 agent 名稱。cluster 視窗的角色來自 `easy-herdr agent rename <pane> <name>`，例如 planner 替自己改名；改名後約 2 秒內，標題就會更新。`easy-herdr switch <cli> <name>` 則是替一般的 switch 視窗命名，這種視窗只顯示 `(name)`，沒有群組。
+角色就是 herdr 的 agent 名稱。cluster 視窗的角色來自 `easy-herdr agent rename <pane> <name>`，例如 planner 替自己改名；改名後約 2 秒內，標題就會更新。`easy-herdr switch <cli> <name>` 則是替一般的 switch 視窗命名，這種視窗顯示 `(name, group: <server pid>)`。群組是啟動目錄的 herdr server 的 process ID，所以同一目錄啟動的一般 switch 視窗都顯示相同群組。server 閒置後自行結束時，下一次啟動會開新的 server，之後啟動的視窗就顯示新的 process ID。
 
 ### 使用自動收尾前要知道的事
 
