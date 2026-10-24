@@ -141,7 +141,7 @@ fn cluster_accepts_auto_exit_options_before_the_first_agent() {
                 options: ClusterOptions {
                     exit_when_done,
                     background,
-                    timeout: Duration::from_secs(timeout),
+                    timeout: Some(Duration::from_secs(timeout)),
                     idle_exit: Duration::from_secs(idle_exit),
                 },
             }),
@@ -175,6 +175,14 @@ fn cluster_rejects_invalid_auto_exit_options_before_launch() {
         (
             vec!["--timeout", "1h", "claude", "--", "hi"],
             "--timeout requires --exit-when-done or --background",
+        ),
+        (
+            vec!["--timeout", "-1", "claude", "--", "hi"],
+            "--timeout requires --exit-when-done or --background",
+        ),
+        (
+            vec!["--exit-when-done", "--idle-exit", "-1", "claude"],
+            "invalid duration: -1 (use 30s, 90m or 2h)",
         ),
         (
             vec!["--idle-exit", "10m", "claude", "--", "hi"],
@@ -221,7 +229,40 @@ fn cluster_rejects_invalid_auto_exit_options_before_launch() {
         ),
         (
             vec!["--exit-when-done", "--timeout", "0s", "claude"],
-            "invalid duration: 0s (use 30s, 90m or 2h)",
+            "invalid duration: 0s (use 30s, 90m, 2h or -1)",
+        ),
+        (
+            vec![
+                "--exit-when-done",
+                "--timeout",
+                "-1",
+                "--timeout",
+                "1h",
+                "claude",
+            ],
+            "--timeout given twice",
+        ),
+        (
+            vec![
+                "--exit-when-done",
+                "--timeout",
+                "1h",
+                "--timeout",
+                "-1",
+                "claude",
+            ],
+            "--timeout given twice",
+        ),
+        (
+            vec![
+                "--exit-when-done",
+                "--timeout",
+                "-1",
+                "--timeout",
+                "-1",
+                "claude",
+            ],
+            "--timeout given twice",
         ),
         (
             vec!["--exit-when-done", "--idle-exit", "10", "claude"],
@@ -249,6 +290,27 @@ fn cluster_rejects_invalid_auto_exit_options_before_launch() {
             "{args:?}"
         );
     }
+}
+
+#[test]
+fn cluster_timeout_accepts_minus_one_as_no_deadline() {
+    assert_eq!(parse_timeout("-1"), Ok(None));
+    assert_eq!(parse_timeout("2h"), Ok(Some(Duration::from_secs(7200))));
+    let args = strings(&["--exit-when-done", "--timeout", "-1", "claude", "--", "hi"]);
+    assert_eq!(
+        parse_cluster_args(&args, |agent| agent == "claude"),
+        Ok(ClusterCommand::Launch {
+            agents: strings(&["claude"]),
+            prompt: Some("hi".into()),
+            options: ClusterOptions {
+                exit_when_done: true,
+                background: false,
+                timeout: None,
+                idle_exit: DEFAULT_IDLE_EXIT,
+            },
+        }),
+        "{args:?}"
+    );
 }
 
 #[test]
@@ -325,6 +387,7 @@ fn cluster_options_help_box_lines_share_one_width_within_80_columns() {
     for flag in [
         "--exit-when-done",
         "--timeout <D>",
+        "--timeout -1",
         "--idle-exit <D>",
         "--background",
     ] {
@@ -493,7 +556,7 @@ fn cluster_tabs_run_switch_with_the_leader_group() {
 fn cluster_end_messages_report_the_reason_and_exit_code() {
     let options = ClusterOptions {
         exit_when_done: true,
-        timeout: Duration::from_secs(7200),
+        timeout: Some(Duration::from_secs(7200)),
         idle_exit: Duration::from_secs(300),
         ..ClusterOptions::default()
     };
@@ -543,7 +606,7 @@ fn cluster_supervisor_gets_the_options_and_agents_but_not_the_prompt_in_argv() {
     let options = ClusterOptions {
         exit_when_done: true,
         background: true,
-        timeout: Duration::from_secs(4 * 60 * 60),
+        timeout: Some(Duration::from_secs(4 * 60 * 60)),
         idle_exit: DEFAULT_IDLE_EXIT,
     };
     let agents = strings(&["claude", "codex"]);
@@ -564,7 +627,38 @@ fn cluster_supervisor_gets_the_options_and_agents_but_not_the_prompt_in_argv() {
     );
     assert_eq!(
         parse_cluster_args(&argv[1..], |agent| matches!(agent, "claude" | "codex")),
-        Ok(ClusterCommand::Supervise { agents, options })
+        Ok(ClusterCommand::Supervise {
+            agents: agents.clone(),
+            options
+        })
+    );
+    let never = ClusterOptions {
+        exit_when_done: true,
+        background: true,
+        timeout: None,
+        idle_exit: DEFAULT_IDLE_EXIT,
+    };
+    let argv = cluster_background::get_supervisor_argv(&agents, &never);
+    assert_eq!(
+        argv,
+        strings(&[
+            "cluster",
+            "--supervise",
+            "--background",
+            "--timeout",
+            "-1",
+            "--idle-exit",
+            "5m",
+            "claude",
+            "codex",
+        ])
+    );
+    assert_eq!(
+        parse_cluster_args(&argv[1..], |agent| matches!(agent, "claude" | "codex")),
+        Ok(ClusterCommand::Supervise {
+            agents,
+            options: never
+        })
     );
     for (args, error) in [
         (
@@ -612,12 +706,25 @@ fn cluster_background_starts_every_member_or_stops_the_started_ones() {
 #[test]
 fn cluster_background_launch_prints_how_to_watch_and_stop() {
     assert_eq!(
-        cluster_background::get_launch_message(12345, "sw-repo-1a2b3c4d5e6f"),
+        cluster_background::get_launch_message(
+            12345,
+            "sw-repo-1a2b3c4d5e6f",
+            Some(Duration::from_secs(7200))
+        ),
         "\
 easy-herdr cluster 12345 started in the background
 watch: easy-herdr --session sw-repo-1a2b3c4d5e6f agent list
 stop:  kill 12345
 log:   ./easy-herdr-cluster-*-12345.log is written only if it times out
+"
+    );
+    assert_eq!(
+        cluster_background::get_launch_message(12345, "sw-repo-1a2b3c4d5e6f", None),
+        "\
+easy-herdr cluster 12345 started in the background
+watch: easy-herdr --session sw-repo-1a2b3c4d5e6f agent list
+stop:  kill 12345
+log:   none: this cluster never times out
 "
     );
 }

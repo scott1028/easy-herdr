@@ -34,6 +34,7 @@ const OPTIONS_HELP: &str = "\
 |                   ./easy-herdr-cluster-<time>-<pid>.log                    |
 |                                                                            |
 | D is a whole number followed by s, m or h, for example 30s, 90m or 2h.     |
+| --timeout -1 means the cluster never times out.                            |
 | --timeout and --idle-exit need --exit-when-done or --background.           |
 | Without these options, cluster behaves as before.                          |
 +----------------------------------------------------------------------------+";
@@ -59,7 +60,8 @@ struct ClusterOptions {
     /// Set by `--exit-when-done` and implied by `--background`.
     exit_when_done: bool,
     background: bool,
-    timeout: Duration,
+    /// `None` when `--timeout -1` removed the deadline.
+    timeout: Option<Duration>,
     idle_exit: Duration,
 }
 
@@ -68,7 +70,7 @@ impl Default for ClusterOptions {
         Self {
             exit_when_done: false,
             background: false,
-            timeout: DEFAULT_TIMEOUT,
+            timeout: Some(DEFAULT_TIMEOUT),
             idle_exit: DEFAULT_IDLE_EXIT,
         }
     }
@@ -153,8 +155,8 @@ fn parse_cluster_args(
 fn parse_cluster_options(args: &[String]) -> Result<(ClusterOptions, &[String]), String> {
     let mut exit_when_done = false;
     let mut background = false;
-    let mut timeout = None;
-    let mut idle_exit = None;
+    let mut timeout: Option<Option<Duration>> = None;
+    let mut idle_exit: Option<Duration> = None;
     let mut index = 0;
     while let Some(flag) = args
         .get(index)
@@ -168,13 +170,11 @@ fn parse_cluster_options(args: &[String]) -> Result<(ClusterOptions, &[String]),
                 let text = args
                     .get(index)
                     .ok_or_else(|| format!("missing <DURATION> after {flag}"))?;
-                let duration = Some(parse_duration(text)?);
-                let slot = if flag == "--timeout" {
-                    &mut timeout
+                if flag == "--timeout" {
+                    timeout.replace(parse_timeout(text)?).is_some()
                 } else {
-                    &mut idle_exit
-                };
-                std::mem::replace(slot, duration).is_some()
+                    idle_exit.replace(parse_duration(text)?).is_some()
+                }
             }
             _ => return Err(format!("unknown option: {flag}")),
         };
@@ -183,18 +183,32 @@ fn parse_cluster_options(args: &[String]) -> Result<(ClusterOptions, &[String]),
         }
         index += 1;
     }
-    for (flag, duration) in [("--timeout", timeout), ("--idle-exit", idle_exit)] {
-        if duration.is_some() && !exit_when_done && !background {
+    for (flag, is_given) in [
+        ("--timeout", timeout.is_some()),
+        ("--idle-exit", idle_exit.is_some()),
+    ] {
+        if is_given && !exit_when_done && !background {
             return Err(format!("{flag} requires --exit-when-done or --background"));
         }
     }
     let options = ClusterOptions {
         exit_when_done: exit_when_done || background,
         background,
-        timeout: timeout.unwrap_or(DEFAULT_TIMEOUT),
+        timeout: timeout.unwrap_or(Some(DEFAULT_TIMEOUT)),
         idle_exit: idle_exit.unwrap_or(DEFAULT_IDLE_EXIT),
     };
     Ok((options, &args[index..]))
+}
+
+/// Parses `--timeout`: a duration, or `-1` for a cluster that never times out.
+fn parse_timeout(text: &str) -> Result<Option<Duration>, String> {
+    if text == "-1" {
+        return Ok(None);
+    }
+    match parse_duration(text) {
+        Ok(duration) => Ok(Some(duration)),
+        Err(_) => Err(format!("invalid duration: {text} (use 30s, 90m, 2h or -1)")),
+    }
 }
 
 /// Parses `<positive integer><s|m|h>`, for example `30s`, `90m` or `2h`.
@@ -373,10 +387,13 @@ fn get_end_message(group: u32, options: &ClusterOptions, outcome: &Outcome) -> (
             ),
             0,
         ),
+        // Unreachable with `--timeout -1`: no deadline means no timeout.
         EndReason::Timeout => (
             format!(
                 "timed out after {}; closed {closed} agent panes",
-                format_duration(options.timeout)
+                options
+                    .timeout
+                    .map_or_else(|| "never".into(), format_duration)
             ),
             124,
         ),
@@ -507,6 +524,7 @@ fn print_help() {
     println!(
         r#"  easy-herdr cluster --background --timeout 4h --idle-exit 10m claude codex -- "fix the bug""#
     );
+    println!(r#"  easy-herdr cluster --exit-when-done --timeout -1 claude codex -- "fix the bug""#);
 }
 
 fn spawn_prompt(pane_id: String, prompt: String) {

@@ -408,6 +408,26 @@ fn background_cluster_closes_agents_and_server_when_all_idle() {
 }
 
 #[test]
+fn background_cluster_without_a_timeout_finishes_on_idle_exit() {
+    let fixture = Fixture::new("finish");
+    let supervisor = launch_background(
+        &fixture,
+        &[
+            "--idle-exit",
+            "1s",
+            "--timeout",
+            "-1",
+            "pi",
+            "--",
+            "do the task",
+        ],
+    );
+    fixture.assert_all_gone(&[supervisor]);
+    assert!(fixture.timeout_logs().is_empty());
+    assert!(fixture.find("cluster-").is_empty(), "ready dir left");
+}
+
+#[test]
 fn background_cluster_times_out_and_writes_log() {
     let fixture = Fixture::new("stuck");
     let supervisor = launch_background(&fixture, &["--timeout", "3s", "pi", "pi", "--", "loop"]);
@@ -530,4 +550,24 @@ fn background_cluster_rejects_a_read_only_cwd() {
         Duration::from_millis(50),
         || herdr_server_pids_for_runtime_dir(&runtime).is_ok_and(|servers| servers.is_empty())
     ));
+}
+
+#[test]
+fn background_cluster_allows_a_read_only_cwd_without_a_timeout() {
+    let fixture = Fixture::new("finish");
+    fs::set_permissions(fixture.work(), fs::Permissions::from_mode(0o555)).unwrap();
+    let supervisor = launch_background(
+        &fixture,
+        &[
+            "--idle-exit",
+            "1s",
+            "--timeout",
+            "-1",
+            "pi",
+            "--",
+            "do the task",
+        ],
+    );
+    fixture.assert_all_gone(&[supervisor]);
+    assert!(fixture.timeout_logs().is_empty());
 }

@@ -225,7 +225,7 @@ fn config(dir: PathBuf, leader: Option<&str>, timeout: Duration) -> WatchConfig 
     WatchConfig {
         ready_dir: dir,
         leader_pane: leader.map(str::to_owned),
-        timeout,
+        timeout: Some(timeout),
         idle_exit: Duration::from_secs(4),
         capture_on_timeout: false,
     }
@@ -375,6 +375,28 @@ fn supervise_closes_members_when_the_timeout_elapses() {
     assert_eq!(run.closes, ["w1:p2"]);
     assert_eq!(run.outcome.closed, 2);
     assert_eq!(run.elapsed, Duration::from_secs(6));
+}
+
+#[test]
+fn supervise_without_a_timeout_never_reaches_a_deadline() {
+    let dir = ready_dir("no-deadline", &["w1:p2"]);
+    let mut watch = config(dir, Some("w1:p1"), Duration::from_secs(5));
+    // `--timeout -1`: the working agents must run past any deadline.
+    watch.timeout = None;
+    let mut checks = 0;
+    let run = run_interrupted(
+        &watch,
+        None,
+        |_| Ok(vec![agent("w1:p1", Working), agent("w1:p2", Working)]),
+        no_lookup,
+        || {
+            checks += 1;
+            (checks == 5).then_some(EndReason::Stopped)
+        },
+    );
+    // Four 2 s polls; with a 5 s deadline the fourth would have ended in Timeout.
+    assert_eq!(run.elapsed, Duration::from_secs(8));
+    assert_eq!(run.outcome.reason, EndReason::Stopped);
 }
 
 #[test]

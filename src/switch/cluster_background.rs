@@ -37,12 +37,15 @@ pub(super) fn launch(
     prompt: &str,
     options: &ClusterOptions,
 ) -> i32 {
-    if let Err(err) = check_writable_dir(cwd) {
-        tracing::debug!(%err, "background cluster cwd is not writable");
-        return report_error(&format!(
-            "background mode needs a writable working directory for its timeout log: {}",
-            cwd.display()
-        ));
+    // A `-1` timeout never writes the timeout log, so a read-only cwd is fine.
+    if options.timeout.is_some() {
+        if let Err(err) = check_writable_dir(cwd) {
+            tracing::debug!(%err, "background cluster cwd is not writable");
+            return report_error(&format!(
+                "background mode needs a writable working directory for its timeout log: {}",
+                cwd.display()
+            ));
+        }
     }
     if let Err(err) =
         crate::session::select_session_for_process(session).and_then(|()| ensure_server())
@@ -71,7 +74,10 @@ pub(super) fn launch(
         ));
     }
     // Not waited for: this process exits now, and init reaps the supervisor.
-    print!("{}", get_launch_message(child.id(), session));
+    print!(
+        "{}",
+        get_launch_message(child.id(), session, options.timeout)
+    );
     0
 }
 
@@ -84,11 +90,15 @@ fn check_writable_dir(dir: &Path) -> std::io::Result<()> {
 
 /// `cluster --supervise` with the parsed options and agents, but no prompt.
 pub(super) fn get_supervisor_argv(agents: &[String], options: &ClusterOptions) -> Vec<String> {
+    let timeout = match options.timeout {
+        Some(duration) => format_duration(duration),
+        None => "-1".into(),
+    };
     let mut argv = ["cluster", "--supervise", "--background", "--timeout"]
         .map(String::from)
         .to_vec();
     argv.extend([
-        format_duration(options.timeout),
+        timeout,
         "--idle-exit".into(),
         format_duration(options.idle_exit),
     ]);
@@ -96,12 +106,16 @@ pub(super) fn get_supervisor_argv(agents: &[String], options: &ClusterOptions) -
     argv
 }
 
-pub(super) fn get_launch_message(pid: u32, session: &str) -> String {
+pub(super) fn get_launch_message(pid: u32, session: &str, timeout: Option<Duration>) -> String {
+    let log = match timeout {
+        Some(_) => format!("./easy-herdr-cluster-*-{pid}.log is written only if it times out"),
+        None => "none: this cluster never times out".into(),
+    };
     format!(
         "easy-herdr cluster {pid} started in the background\n\
          watch: easy-herdr --session {session} agent list\n\
          stop:  kill {pid}\n\
-         log:   ./easy-herdr-cluster-*-{pid}.log is written only if it times out\n"
+         log:   {log}\n"
     )
 }
 
@@ -182,10 +196,14 @@ pub(super) fn supervise(
         (!members.iter_mut().any(is_running)).then_some(EndReason::AgentsExited)
     });
     tracing::info!(group, reason = ?outcome.reason, closed = outcome.closed, "background cluster ended");
-    if outcome.reason == EndReason::Timeout {
+    // A `-1` timeout has no deadline, so only a set timeout can produce a log.
+    if let Some(timeout) = options
+        .timeout
+        .filter(|_| outcome.reason == EndReason::Timeout)
+    {
         let log = cluster_log::render(&LogInfo {
             group,
-            timeout: options.timeout,
+            timeout,
             started,
             ended: cluster_log::now(),
             cwd,

@@ -22,7 +22,8 @@ pub(super) struct WatchConfig {
     pub(super) ready_dir: PathBuf,
     /// The cluster's own pane: watched, but never closed by the supervisor.
     pub(super) leader_pane: Option<String>,
-    pub(super) timeout: Duration,
+    /// `None` never times out; set by `--timeout -1`.
+    pub(super) timeout: Option<Duration>,
     pub(super) idle_exit: Duration,
     /// Background mode: snapshot live members before closing them on a timeout.
     pub(super) capture_on_timeout: bool,
@@ -154,8 +155,10 @@ pub(super) fn supervise(
     mut interrupt: impl FnMut() -> Option<EndReason>,
 ) -> Outcome {
     let start = now();
-    // An overflowing timeout means no deadline.
-    let deadline = start.checked_add(config.timeout);
+    // A missing or overflowing timeout means no deadline.
+    let deadline = config
+        .timeout
+        .and_then(|timeout| start.checked_add(timeout));
     let mut tracker = IdleTracker::new(config.idle_exit);
     let mut members = Vec::<Member>::new();
     let mut timeline = VecDeque::new();

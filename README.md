@@ -171,11 +171,11 @@ The idle clock starts only after some agent has worked, and any new work resets 
 | Option | Without it | With it |
 | --- | --- | --- |
 | `--exit-when-done` | Windows and agents stay open after the task; you close them. | Once every agent has stayed idle for `--idle-exit`, cluster closes all of its agent panes. In the foreground it then prints one line and exits 0. |
-| `--timeout <D>` | Default `2h`. Takes effect only with `--exit-when-done` or `--background`. | When D has passed and the cluster is still running, it closes its panes anyway. In the foreground it prints `timed out after D` and exits 124; in the background it writes a log in the current directory instead. |
+| `--timeout <D>` | Default `2h`. Takes effect only with `--exit-when-done` or `--background`. | When D has passed and the cluster is still running, it closes its panes anyway. In the foreground it prints `timed out after D` and exits 124; in the background it writes a log in the current directory instead. `-1` removes the deadline: the cluster then ends only when every agent has idled for `--idle-exit` or every agent exits, or when you stop it yourself (`kill <pid>` in the background). |
 | `--idle-exit <D>` | Default `5m`, under the same rule. | Sets how long every agent must stay idle before the task counts as done. |
 | `--background` | The first agent runs in this terminal; the others open tabs or windows. | No windows: every agent runs in a hidden terminal, and the command prints its process ID and exits 0 at once. You can keep using the terminal or log out. Implies `--exit-when-done` and requires a prompt. |
 
-`D` is a positive whole number followed by `s`, `m` or `h`, such as `30s`, `90m` or `2h`. Put the options before the first agent name, because the last argument after the agents is the prompt.
+`D` is a positive whole number followed by `s`, `m` or `h`, such as `30s`, `90m` or `2h`; only `--timeout` also accepts `-1`, which never times out. Put the options before the first agent name, because the last argument after the agents is the prompt.
 
 What you see, and the exit code, depends on how the cluster runs:
 
@@ -198,8 +198,11 @@ What you see, and the exit code, depends on how the cluster runs:
 | `--background --exit-when-done` | yes | Same as the row above |
 | `--background --timeout 4h` | yes | Background, timeout 4h; writes a log on timeout |
 | `--background --exit-when-done --timeout 4h --idle-exit 10m` | yes | Background, timeout 4h, idle 10m |
+| `--exit-when-done --timeout -1` | yes | Foreground, no deadline; ends on idle 5m, when every agent exits, or when you interrupt it |
+| `--background --timeout -1` | yes | Background, no deadline; an agent that never idles keeps the cluster running until you `kill <pid>` |
 | `--timeout 1h` alone | no, exit 2 | `--timeout requires --exit-when-done or --background` |
 | `--idle-exit 10m` alone | no, exit 2 | `--idle-exit requires --exit-when-done or --background` |
+| `--exit-when-done --idle-exit -1` | no, exit 2 | `invalid duration: -1 (use 30s, 90m or 2h)` |
 | `--background` without a prompt | no, exit 2 | `--background requires a prompt` |
 | The same option twice, such as `--timeout 1h --timeout 2h` | no, exit 2 | `--timeout given twice` |
 
@@ -222,6 +225,9 @@ easy-herdr cluster --background claude claude claude codex -- "..."
 
 # Background with a longer timeout
 easy-herdr cluster --background --timeout 4h claude codex -- "..."
+
+# Run as long as the work needs; ends when every agent idles or exits
+easy-herdr cluster --exit-when-done --timeout -1 claude codex -- "..."
 ```
 
 A background start prints how to watch and stop it:
