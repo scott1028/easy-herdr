@@ -575,9 +575,5 @@ fn agent_env(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Vec<(Strin
 }
 
 #[cfg(test)]
-#[path = "switch_tdd.rs"]
-mod switch_tdd;
-
-#[cfg(test)]
 #[path = "switch_tests.rs"]
 mod tests;

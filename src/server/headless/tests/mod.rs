@@ -6,7 +6,8 @@ mod native_graphics;
 mod pane_move_tests;
 // These tests run shell programs through a Unix PTY.
 #[cfg(unix)]
-mod passthrough_tdd;
+#[path = "passthrough.rs"]
+mod passthrough_tests;
 #[path = "pane_graphics.rs"]
 mod retained_graphics_tests;
 #[path = "surface_delta.rs"]

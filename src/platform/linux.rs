@@ -884,8 +884,8 @@ pub fn open_url(url: &str) -> std::io::Result<Option<std::process::Child>> {
 }
 
 #[cfg(test)]
-#[path = "linux_tab_tdd.rs"]
-mod tab_tdd;
+#[path = "linux_tab_tests.rs"]
+mod tab_tests;
 
 fn terminal_tab_command(
     spec: &TerminalWindowSpec,

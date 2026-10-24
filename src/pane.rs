@@ -4154,8 +4154,8 @@ impl PaneRuntime {
 
 // These tests run shell programs through a Unix PTY.
 #[cfg(all(test, unix))]
-#[path = "pane_passthrough_tdd.rs"]
-mod passthrough_tdd;
+#[path = "pane_passthrough_tests.rs"]
+mod passthrough_tests;
 
 #[cfg(test)]
 mod tests {

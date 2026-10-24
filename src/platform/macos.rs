@@ -240,8 +240,8 @@ fn shell_quote(value: &str) -> String {
 }
 
 #[cfg(test)]
-#[path = "macos_tab_tdd.rs"]
-mod tab_tdd;
+#[path = "macos_tab_tests.rs"]
+mod tab_tests;
 
 fn terminal_tab_command(
     spec: &TerminalWindowSpec,

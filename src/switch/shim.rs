@@ -196,5 +196,5 @@ fn opencode_opens_interface(args: &[String], is_dir: impl Fn(&str) -> bool) -> b
 }
 
 #[cfg(test)]
-#[path = "shim_tdd.rs"]
-mod shim_tdd;
+#[path = "shim_tests.rs"]
+mod tests;

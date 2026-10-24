@@ -469,8 +469,8 @@ mod windows_tests {
 }
 
 #[cfg(test)]
-#[path = "autodetect_tdd.rs"]
-mod autodetect_tdd;
+#[path = "autodetect_tests.rs"]
+mod autodetect_tests;
 
 #[cfg(all(test, unix))]
 mod tests {

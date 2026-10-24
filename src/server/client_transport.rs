@@ -2521,8 +2521,8 @@ mod tests {
             .expect("read thread result");
     }
 
-    #[path = "passthrough_tdd.rs"]
-    mod passthrough_tdd;
+    #[path = "passthrough.rs"]
+    mod passthrough_tests;
 
     #[test]
     fn client_read_loop_uses_authoritative_shell_resize_surface() {

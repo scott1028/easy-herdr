@@ -142,5 +142,5 @@ impl PtyPassthrough {
 }
 
 #[cfg(test)]
-#[path = "passthrough_tdd.rs"]
-mod passthrough_tdd;
+#[path = "passthrough_tests.rs"]
+mod tests;

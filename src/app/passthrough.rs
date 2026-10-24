@@ -186,5 +186,5 @@ impl App {
 
 // These tests run shell programs through a Unix PTY.
 #[cfg(all(test, unix))]
-#[path = "passthrough_tdd.rs"]
-mod passthrough_tdd;
+#[path = "passthrough_tests.rs"]
+mod tests;

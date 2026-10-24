@@ -127,5 +127,5 @@ pub(super) fn format_file_time(time: OffsetDateTime) -> String {
 }
 
 #[cfg(test)]
-#[path = "cluster_log_tdd.rs"]
-mod tdd;
+#[path = "cluster_log_tests.rs"]
+mod tests;

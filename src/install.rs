@@ -172,7 +172,3 @@ fn find_herdr_dir_on_path(path: &OsStr, cwd: &Path) -> Option<PathBuf> {
 #[cfg(all(test, unix))]
 #[path = "install_tests.rs"]
 mod tests;
-
-#[cfg(all(test, unix))]
-#[path = "install_tdd.rs"]
-mod install_tdd;

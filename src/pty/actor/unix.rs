@@ -1120,8 +1120,8 @@ fn input_submission_closed_error() -> std::io::Error {
 }
 
 #[cfg(test)]
-#[path = "unix_passthrough_tdd.rs"]
-mod passthrough_tdd;
+#[path = "unix_passthrough_tests.rs"]
+mod passthrough_tests;
 
 #[cfg(test)]
 mod tests {

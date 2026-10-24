@@ -68,5 +68,5 @@ pub(super) fn ensure_link(target: &Path, link: &Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
-#[path = "agent_home_tdd.rs"]
-mod agent_home_tdd;
+#[path = "agent_home_tests.rs"]
+mod tests;

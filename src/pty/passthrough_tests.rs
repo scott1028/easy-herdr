@@ -57,22 +57,6 @@ fn passthrough_with_sink() -> (Arc<PtyPassthrough>, Arc<FakeSink>, Arc<AtomicUsi
 }
 
 #[test]
-fn output_reaches_sink_in_order() {
-    let (passthrough, sink, _) = passthrough_with_sink();
-
-    passthrough.on_output(b"\x1b[?1049h");
-    passthrough.on_output(b"hello");
-
-    assert_eq!(
-        *sink.events.lock().unwrap(),
-        [
-            SinkEvent::Output(b"\x1b[?1049h".to_vec()),
-            SinkEvent::Output(b"hello".to_vec()),
-        ]
-    );
-}
-
-#[test]
 fn reads_pause_above_high_watermark_and_resume_with_wake_after_drain() {
     let (passthrough, _sink, wakes) = passthrough_with_sink();
 

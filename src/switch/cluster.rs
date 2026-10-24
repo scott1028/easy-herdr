@@ -596,5 +596,5 @@ fn prompt_when_ready(
 }
 
 #[cfg(test)]
-#[path = "cluster_tdd.rs"]
-mod tdd;
+#[path = "cluster_tests.rs"]
+mod tests;

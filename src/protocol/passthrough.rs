@@ -109,5 +109,5 @@ pub(crate) fn decode_event(kind: &str, data: &str) -> Option<Result<PassthroughE
 }
 
 #[cfg(test)]
-#[path = "passthrough_tdd.rs"]
-mod passthrough_tdd;
+#[path = "passthrough_tests.rs"]
+mod tests;

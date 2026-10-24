@@ -404,5 +404,5 @@ fn watch_leader(
 }
 
 #[cfg(test)]
-#[path = "cluster_watch_tdd.rs"]
-mod tdd;
+#[path = "cluster_watch_tests.rs"]
+mod tests;

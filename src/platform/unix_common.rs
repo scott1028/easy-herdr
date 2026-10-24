@@ -1,9 +1,5 @@
 use std::path::{Path, PathBuf};
 
-#[cfg(test)]
-#[path = "unix_tab_tdd.rs"]
-mod tab_tdd;
-
 pub(super) fn run_tab_command(argv: &[String], cwd: &Path) -> bool {
     use std::os::unix::process::CommandExt as _;
     use std::process::{Command, Stdio};
@@ -705,6 +701,16 @@ pub(crate) fn set_default_plugin_pane_pwd(env: &mut Vec<(String, String)>, cwd: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_command_reports_launch_outcomes_without_owning_stdio() {
+        let cwd = std::env::temp_dir();
+        // macOS has no /bin/true or /bin/false, so resolve them from PATH.
+        assert!(run_tab_command(&["true".into()], &cwd));
+        assert!(!run_tab_command(&["false".into()], &cwd));
+        assert!(!run_tab_command(&["/missing-terminal-cli".into()], &cwd));
+        assert!(run_tab_command(&["/bin/sleep".into(), "4".into()], &cwd));
+    }
 
     #[test]
     fn server_hangup_evidence_expires() {
