@@ -11,6 +11,7 @@ fn cluster_parses_multiple_agents_without_shells() {
         Ok(ClusterCommand::Launch {
             agents: strings(&["claude", "codex", "opencode-local"]),
             prompt: None,
+            options: ClusterOptions::default(),
         })
     );
 }
@@ -32,6 +33,7 @@ fn cluster_separates_the_optional_prompt_from_agents() {
             Ok(ClusterCommand::Launch {
                 agents: strings(&["claude", "codex"]),
                 prompt: Some(prompt.into()),
+                options: ClusterOptions::default(),
             })
         );
     }
@@ -76,6 +78,257 @@ fn cluster_help_does_not_check_agent_availability() {
             )),
             Ok(ClusterCommand::Help)
         );
+    }
+}
+
+#[test]
+fn cluster_accepts_auto_exit_options_before_the_first_agent() {
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    for (flags, exit_when_done, background, timeout, idle_exit) in [
+        (vec![], false, false, 2 * HOUR, 5 * MINUTE),
+        (vec!["--exit-when-done"], true, false, 2 * HOUR, 5 * MINUTE),
+        (
+            vec!["--exit-when-done", "--timeout", "3h", "--idle-exit", "10m"],
+            true,
+            false,
+            3 * HOUR,
+            10 * MINUTE,
+        ),
+        (vec!["--background"], true, true, 2 * HOUR, 5 * MINUTE),
+        (
+            vec!["--background", "--exit-when-done"],
+            true,
+            true,
+            2 * HOUR,
+            5 * MINUTE,
+        ),
+        (
+            vec!["--background", "--timeout", "4h"],
+            true,
+            true,
+            4 * HOUR,
+            5 * MINUTE,
+        ),
+        (
+            vec![
+                "--background",
+                "--exit-when-done",
+                "--timeout",
+                "4h",
+                "--idle-exit",
+                "10m",
+            ],
+            true,
+            true,
+            4 * HOUR,
+            10 * MINUTE,
+        ),
+        (
+            vec!["--idle-exit", "30s", "--exit-when-done"],
+            true,
+            false,
+            2 * HOUR,
+            30,
+        ),
+    ] {
+        let args = strings(&[flags.as_slice(), &["claude", "codex", "--", "fix", "it"]].concat());
+        assert_eq!(
+            parse_cluster_args(&args, |agent| matches!(agent, "claude" | "codex")),
+            Ok(ClusterCommand::Launch {
+                agents: strings(&["claude", "codex"]),
+                prompt: Some("fix it".into()),
+                options: ClusterOptions {
+                    exit_when_done,
+                    background,
+                    timeout: Duration::from_secs(timeout),
+                    idle_exit: Duration::from_secs(idle_exit),
+                },
+            }),
+            "{args:?}"
+        );
+    }
+    for (args, prompt) in [
+        (vec!["--exit-when-done", "claude"], None),
+        (
+            vec!["--background", "claude", "fix the bug"],
+            Some("fix the bug"),
+        ),
+    ] {
+        let Ok(ClusterCommand::Launch {
+            agents,
+            prompt: parsed_prompt,
+            options,
+        }) = parse_cluster_args(&strings(&args), |agent| agent == "claude")
+        else {
+            panic!("{args:?} must launch");
+        };
+        assert_eq!(agents, strings(&["claude"]));
+        assert_eq!(parsed_prompt.as_deref(), prompt);
+        assert!(options.exit_when_done);
+    }
+}
+
+#[test]
+fn cluster_rejects_invalid_auto_exit_options_before_launch() {
+    for (args, error) in [
+        (
+            vec!["--timeout", "1h", "claude", "--", "hi"],
+            "--timeout requires --exit-when-done or --background",
+        ),
+        (
+            vec!["--idle-exit", "10m", "claude", "--", "hi"],
+            "--idle-exit requires --exit-when-done or --background",
+        ),
+        (
+            vec!["--background", "claude", "codex"],
+            "--background requires a prompt",
+        ),
+        (
+            vec!["--background", "--exit-when-done", "claude"],
+            "--background requires a prompt",
+        ),
+        (
+            vec!["--timeout", "1h", "--timeout", "2h", "claude", "--", "hi"],
+            "--timeout given twice",
+        ),
+        (
+            vec![
+                "--exit-when-done",
+                "--idle-exit",
+                "1m",
+                "--idle-exit",
+                "2m",
+                "claude",
+            ],
+            "--idle-exit given twice",
+        ),
+        (
+            vec!["--exit-when-done", "--exit-when-done", "claude"],
+            "--exit-when-done given twice",
+        ),
+        (
+            vec!["--background", "--background", "claude", "--", "hi"],
+            "--background given twice",
+        ),
+        (
+            vec!["--exit-when-done", "--timeout"],
+            "missing <DURATION> after --timeout",
+        ),
+        (
+            vec!["--exit-when-done", "--idle-exit"],
+            "missing <DURATION> after --idle-exit",
+        ),
+        (
+            vec!["--exit-when-done", "--timeout", "0s", "claude"],
+            "invalid duration: 0s (use 30s, 90m or 2h)",
+        ),
+        (
+            vec!["--exit-when-done", "--idle-exit", "10", "claude"],
+            "invalid duration: 10 (use 30s, 90m or 2h)",
+        ),
+        (vec!["-x", "claude"], "unknown option: -x"),
+        (
+            vec!["--exit-when-done", "--verbose", "claude"],
+            "unknown option: --verbose",
+        ),
+        (
+            vec!["--exit-when-done", "claude", "-v"],
+            "unknown option: -v",
+        ),
+        (
+            vec!["--exit-when-done", "claude", "--timeout", "1h"],
+            "unknown option: --timeout",
+        ),
+        (vec!["--exit-when-done"], "missing <AGENT_CLI>"),
+        (vec!["--exit-when-done", "--", "hi"], "missing <AGENT_CLI>"),
+    ] {
+        assert_eq!(
+            parse_cluster_args(&strings(&args), |agent| matches!(agent, "claude" | "codex")),
+            Err(error.into()),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn cluster_durations_parse_a_positive_count_with_one_unit() {
+    for (text, seconds) in [
+        ("1s", 1),
+        ("45s", 45),
+        ("30s", 30),
+        ("5m", 300),
+        ("90m", 5400),
+        ("2h", 7200),
+        ("5124095576030431h", 5124095576030431 * 3600),
+    ] {
+        assert_eq!(parse_duration(text), Ok(Duration::from_secs(seconds)));
+    }
+    for text in [
+        "",
+        "s",
+        "0s",
+        "0m",
+        "0h",
+        "30",
+        "30d",
+        "30ms",
+        "1.5h",
+        "1h30m",
+        "+5m",
+        "-5m",
+        " 5m",
+        "5m ",
+        "5 m",
+        "\u{ff15}m",
+        "5\u{79d2}",
+        "18446744073709551616s",
+        "5124095576030432h",
+    ] {
+        assert_eq!(
+            parse_duration(text),
+            Err(format!("invalid duration: {text} (use 30s, 90m or 2h)"))
+        );
+    }
+}
+
+#[test]
+fn cluster_durations_format_with_the_largest_exact_unit() {
+    for (seconds, text) in [
+        (7200, "2h"),
+        (3600, "1h"),
+        (300, "5m"),
+        (5400, "90m"),
+        (60, "1m"),
+        (45, "45s"),
+        (61, "61s"),
+        (0, "0s"),
+    ] {
+        assert_eq!(format_duration(Duration::from_secs(seconds)), text);
+    }
+}
+
+#[test]
+fn cluster_options_help_box_lines_share_one_width_within_80_columns() {
+    let lines = OPTIONS_HELP.lines().collect::<Vec<_>>();
+    let width = lines[0].chars().count();
+    assert!(lines.len() > 2 && width <= 80, "{lines:?}");
+    for (index, line) in lines.iter().enumerate() {
+        assert_eq!(line.chars().count(), width, "{line:?}");
+        let edge = if index == 0 || index + 1 == lines.len() {
+            '+'
+        } else {
+            '|'
+        };
+        assert!(line.starts_with(edge) && line.ends_with(edge), "{line:?}");
+    }
+    for flag in [
+        "--exit-when-done",
+        "--timeout <D>",
+        "--idle-exit <D>",
+        "--background",
+    ] {
+        assert!(OPTIONS_HELP.contains(flag), "missing {flag}");
     }
 }
 
@@ -192,6 +445,181 @@ fn prompt_does_not_resubmit_after_an_ambiguous_transport_error() {
         },
     );
     assert_eq!(prompts, 1);
+}
+
+#[test]
+fn cluster_tabs_run_switch_with_the_leader_group() {
+    for (ready_file, expected) in [
+        (
+            None,
+            strings(&[
+                "/bin/easy-herdr",
+                "switch",
+                "--cluster-group",
+                "12345",
+                "codex",
+            ]),
+        ),
+        (
+            Some("/d/cluster-12345/1.ready"),
+            strings(&[
+                "/bin/easy-herdr",
+                "switch",
+                "--cluster-group",
+                "12345",
+                "--cluster-ready",
+                "/d/cluster-12345/1.ready",
+                "codex",
+            ]),
+        ),
+    ] {
+        let argv = get_tab_argv("/bin/easy-herdr", 12345, ready_file, "codex");
+        assert_eq!(argv, expected);
+        assert_eq!(
+            crate::switch::parse_switch_args(&argv[2..]),
+            Ok(crate::switch::SwitchCommand::Launch {
+                argv: strings(&["codex"]),
+                agent_name: None,
+                member: Some(crate::switch::ClusterMember {
+                    group: 12345,
+                    ready_file: ready_file.map(std::path::PathBuf::from),
+                }),
+            })
+        );
+    }
+}
+
+#[test]
+fn cluster_end_messages_report_the_reason_and_exit_code() {
+    let options = ClusterOptions {
+        exit_when_done: true,
+        timeout: Duration::from_secs(7200),
+        idle_exit: Duration::from_secs(300),
+        ..ClusterOptions::default()
+    };
+    for (reason, message, code) in [
+        (
+            cluster_watch::EndReason::Done,
+            "easy-herdr cluster 12345: all agents idle for 5m; closed 4 agent panes",
+            0,
+        ),
+        (
+            cluster_watch::EndReason::Timeout,
+            "easy-herdr cluster 12345: timed out after 2h; closed 4 agent panes",
+            124,
+        ),
+        (
+            cluster_watch::EndReason::AgentsExited,
+            "easy-herdr cluster 12345: all agents exited",
+            0,
+        ),
+        (
+            cluster_watch::EndReason::ServerGone,
+            "easy-herdr cluster 12345: lost the herdr server",
+            1,
+        ),
+        (
+            cluster_watch::EndReason::Stopped,
+            "easy-herdr cluster 12345: stopped; closed 4 agent panes",
+            143,
+        ),
+    ] {
+        let outcome = cluster_watch::Outcome {
+            reason,
+            closed: 4,
+            members: Vec::new(),
+            timeline: Default::default(),
+            snapshots: Vec::new(),
+        };
+        assert_eq!(
+            get_end_message(12345, &options, &outcome),
+            (message.to_owned(), code)
+        );
+    }
+}
+
+#[test]
+fn cluster_supervisor_gets_the_options_and_agents_but_not_the_prompt_in_argv() {
+    let options = ClusterOptions {
+        exit_when_done: true,
+        background: true,
+        timeout: Duration::from_secs(4 * 60 * 60),
+        idle_exit: DEFAULT_IDLE_EXIT,
+    };
+    let agents = strings(&["claude", "codex"]);
+    let argv = cluster_background::get_supervisor_argv(&agents, &options);
+    assert_eq!(
+        argv,
+        strings(&[
+            "cluster",
+            "--supervise",
+            "--background",
+            "--timeout",
+            "4h",
+            "--idle-exit",
+            "5m",
+            "claude",
+            "codex",
+        ])
+    );
+    assert_eq!(
+        parse_cluster_args(&argv[1..], |agent| matches!(agent, "claude" | "codex")),
+        Ok(ClusterCommand::Supervise { agents, options })
+    );
+    for (args, error) in [
+        (
+            vec!["--supervise", "claude"],
+            "--supervise requires --background",
+        ),
+        (
+            vec!["--supervise", "--background", "claude", "--", "fix"],
+            "--supervise reads the prompt from stdin",
+        ),
+        (
+            vec!["--supervise", "--background", "claude", "fix it"],
+            "--supervise reads the prompt from stdin",
+        ),
+    ] {
+        assert_eq!(
+            parse_cluster_args(&strings(&args), |_| true),
+            Err(error.into()),
+            "{args:?}"
+        );
+    }
+    assert!(!OPTIONS_HELP.contains("--supervise"));
+}
+
+#[test]
+fn cluster_background_starts_every_member_or_stops_the_started_ones() {
+    let mut stopped = Vec::new();
+    let result = cluster_background::spawn_all(
+        4,
+        |index| {
+            if index == 2 {
+                Err(format!("no PTY for agent {index}"))
+            } else {
+                Ok(index)
+            }
+        },
+        |members| stopped.extend(members),
+    );
+    assert_eq!(result, Err("no PTY for agent 2".into()));
+    assert_eq!(stopped, [0, 1]);
+    let result = cluster_background::spawn_all(3, Ok, |_: Vec<usize>| panic!("nothing failed"));
+    assert_eq!(result, Ok(vec![0, 1, 2]));
+}
+
+#[test]
+fn cluster_background_launch_prints_how_to_watch_and_stop() {
+    assert_eq!(
+        cluster_background::get_launch_message(12345, "sw-repo-1a2b3c4d5e6f"),
+        "\
+easy-herdr cluster 12345 started in the background
+watch: easy-herdr --session sw-repo-1a2b3c4d5e6f agent list
+stop:  kill 12345
+log:   ./easy-herdr-cluster-*-12345.log is written only if it times out
+"
+    );
 }
 
 #[test]

@@ -3,7 +3,8 @@ use std::sync::{mpsc::SyncSender, Weak};
 use std::time::Duration;
 
 use super::RelayInput;
-use crate::api::{client::ApiClient, schema::*};
+use crate::api::client::{parse_response_value, ApiClient, ApiClientError};
+use crate::api::schema::*;
 use interprocess::local_socket::traits::Stream as _;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -78,6 +79,66 @@ pub(super) fn spawn(pane_id: String, sender: SyncSender<RelayInput>, alive: Weak
             std::thread::sleep(Duration::from_secs(1));
         }
     });
+}
+
+/// Polls the agent name every 2 s and sends it as the title role when it changes.
+pub(super) fn spawn_role_refresh(
+    pane_id: String,
+    mut role: Option<String>,
+    sender: SyncSender<RelayInput>,
+    alive: Weak<()>,
+) {
+    std::thread::spawn(move || {
+        let client = ApiClient::local();
+        loop {
+            std::thread::sleep(Duration::from_secs(2));
+            if alive.strong_count() == 0 {
+                break;
+            }
+            let Some(changed) = poll_role_change(&pane_id, &mut role, |method| {
+                client
+                    .request_value_with_timeout(
+                        &Request {
+                            id: "switch:role".into(),
+                            method,
+                        },
+                        Duration::from_secs(1),
+                    )
+                    .and_then(parse_response_value)
+                    .map(|response| response.result)
+            }) else {
+                continue;
+            };
+            if sender.send(RelayInput::Role(changed)).is_err() {
+                break;
+            }
+        }
+    });
+}
+
+/// Returns the new agent name when it differs from `role`; failures keep the last one.
+fn poll_role_change(
+    pane_id: &str,
+    role: &mut Option<String>,
+    request: impl FnOnce(Method) -> Result<ResponseResult, ApiClientError>,
+) -> Option<Option<String>> {
+    match request(Method::AgentGet(AgentTarget {
+        target: pane_id.into(),
+    })) {
+        Ok(ResponseResult::AgentInfo { agent }) if agent.name != *role => {
+            role.clone_from(&agent.name);
+            Some(agent.name)
+        }
+        Ok(ResponseResult::AgentInfo { .. }) => None,
+        Ok(_) => {
+            tracing::debug!(pane_id, "unexpected switch role response");
+            None
+        }
+        Err(error) => {
+            tracing::debug!(pane_id, %error, "cannot poll switch role");
+            None
+        }
+    }
 }
 
 fn subscribe(pane_id: &str, sender: &SyncSender<RelayInput>, alive: &Weak<()>) -> io::Result<()> {

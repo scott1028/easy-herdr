@@ -38,7 +38,7 @@ fn root_help_lists_easy_herdr_additions_at_section_start() {
         &help,
         &[
             "Usage: easy-herdr switch <agent-cli> [agent-name] [-- agent-args...]",
-            "       easy-herdr cluster <agent-cli>... [prompt]",
+            "       easy-herdr cluster [OPTIONS] <agent-cli>... [prompt]",
             "       easy-herdr <agent-cli> [agent-args...]",
             "       easy-herdr install [--dir DIR]",
             "       easy-herdr uninstall [--dir DIR]",
@@ -50,7 +50,7 @@ fn root_help_lists_easy_herdr_additions_at_section_start() {
         &[
             "Common commands:",
             "  easy-herdr switch <agent-cli> [agent-name]",
-            "  easy-herdr cluster <agent-cli>... [prompt]",
+            "  easy-herdr cluster [OPTIONS] <agent-cli>... [prompt]",
             "  easy-herdr <agent-cli> [agent-args...]",
             "  easy-herdr install [--dir DIR]",
             "  easy-herdr uninstall [--dir DIR]",

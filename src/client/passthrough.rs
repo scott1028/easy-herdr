@@ -6,7 +6,7 @@
 
 use std::io::{self, Read as _, Write as _};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -39,6 +39,7 @@ enum RelayInput {
     Shutdown(Option<String>),
     Lost,
     Status(Option<AgentStatus>),
+    Role(Option<String>),
 }
 
 /// Notice shown before the agent starts when its requested name was taken.
@@ -67,8 +68,9 @@ pub(crate) fn run_passthrough(
     env: Vec<(String, String)>,
     agent_name: Option<String>,
     program_name: Option<String>,
-    title_label: Option<String>,
+    title: Option<super::startup::PassthroughTitle>,
     on_started: Option<super::startup::PassthroughStartedCallback>,
+    stop: Option<Arc<AtomicBool>>,
 ) -> io::Result<i32> {
     init_logging();
     let Some(cwd_text) = cwd.to_str().map(str::to_owned) else {
@@ -118,11 +120,16 @@ pub(crate) fn run_passthrough(
     if let Some(on_started) = on_started {
         on_started(&started);
     }
-    let title =
-        title_label.map(|label| TitleRewriter::new(&format!("{label} · {}", started.pane_id)));
+    let title = title.map(|title| {
+        TitleRewriter::new(
+            &format!("{} · {}", title.label, started.pane_id),
+            title.group,
+            started.agent_name.clone(),
+        )
+    });
     if let Some(title) = &title {
         if let Err(err) =
-            crate::terminal_effects::write_window_title(&mut io::stdout(), Some(&title.prefix))
+            crate::terminal_effects::write_window_title(&mut io::stdout(), Some(&title.label()))
         {
             eprintln!("herdr-switch: {err}");
             return Ok(1);
@@ -147,7 +154,7 @@ pub(crate) fn run_passthrough(
     install_termination_handler();
     spawn_stdin_forwarder(writer.clone());
     spawn_resize_forwarder(writer, (cols, rows, cell_width_px, cell_height_px));
-    let code = relay_output(stream, title, &started.pane_id);
+    let code = relay_output(stream, title, &started.pane_id, started.agent_name, stop);
     restore_terminal();
     Ok(code)
 }
@@ -176,13 +183,26 @@ fn wait_for_start(stream: &mut LocalStream) -> io::Result<Result<PassthroughStar
     }
 }
 
-/// Writes passthrough output to stdout until the program exits or the server goes away.
-fn relay_output(mut stream: LocalStream, mut title: Option<TitleRewriter>, pane_id: &str) -> i32 {
+/// Writes passthrough output to stdout until the program exits, the server goes away
+/// or `stop` is set. Stopping returns 0 without waiting; disconnecting closes the pane.
+fn relay_output(
+    mut stream: LocalStream,
+    mut title: Option<TitleRewriter>,
+    pane_id: &str,
+    role: Option<String>,
+    stop: Option<Arc<AtomicBool>>,
+) -> i32 {
     let (sender, receiver) = mpsc::sync_channel(64);
     // This token follows the receiver's lifetime, including early returns.
     let alive = Arc::new(());
     if title.is_some() {
         passthrough_status::spawn(pane_id.into(), sender.clone(), Arc::downgrade(&alive));
+        passthrough_status::spawn_role_refresh(
+            pane_id.into(),
+            role,
+            sender.clone(),
+            Arc::downgrade(&alive),
+        );
     }
     std::thread::spawn(move || loop {
         let input = match protocol::read_message(&mut stream, MAX_GRAPHICS_FRAME_SIZE) {
@@ -207,9 +227,12 @@ fn relay_output(mut stream: LocalStream, mut title: Option<TitleRewriter>, pane_
     let mut last_output = Instant::now();
     let mut dirty = false;
     let mut completion = passthrough_status::CompletionTracker::default();
+    let mut alt_screen = crate::terminal_modes::AltScreenTracker::default();
+    let mut is_stopped = false;
     let code = loop {
         match receiver.recv_timeout(quiet) {
             Ok(RelayInput::Output(bytes)) => {
+                alt_screen.track(&bytes);
                 let bytes = if let Some(title) = &mut title {
                     rewritten.clear();
                     title.rewrite(&bytes, &mut rewritten);
@@ -233,6 +256,11 @@ fn relay_output(mut stream: LocalStream, mut title: Option<TitleRewriter>, pane_
                     .and_then(passthrough_status::title_icon);
                 if let Some(title) = &mut title {
                     dirty |= title.set_status(icon);
+                }
+            }
+            Ok(RelayInput::Role(role)) => {
+                if let Some(title) = &mut title {
+                    dirty |= title.set_role(role);
                 }
             }
             Ok(RelayInput::Invalid(err)) => {
@@ -267,6 +295,13 @@ fn relay_output(mut stream: LocalStream, mut title: Option<TitleRewriter>, pane_
                 dirty = false;
             }
         }
+        if stop
+            .as_ref()
+            .is_some_and(|stop| stop.load(Ordering::SeqCst))
+        {
+            is_stopped = true;
+            break 0;
+        }
     };
     if let Some(title) = &mut title {
         rewritten.clear();
@@ -278,6 +313,13 @@ fn relay_output(mut stream: LocalStream, mut title: Option<TitleRewriter>, pane_
         {
             return 1;
         }
+    }
+    // A stopped agent never sends its own cleanup.
+    if is_stopped
+        && crate::terminal_modes::reset_passthrough_modes(&mut stdout, alt_screen.get_is_active())
+            .is_err()
+    {
+        return 1;
     }
     code
 }

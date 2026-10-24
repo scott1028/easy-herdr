@@ -614,7 +614,7 @@ fn main() -> io::Result<()> {
         #[cfg(unix)]
         println!("Usage: easy-herdr switch <agent-cli> [agent-name] [-- agent-args...]");
         #[cfg(unix)]
-        println!("       easy-herdr cluster <agent-cli>... [prompt]");
+        println!("       easy-herdr cluster [OPTIONS] <agent-cli>... [prompt]");
         #[cfg(unix)]
         println!("       easy-herdr <agent-cli> [agent-args...]");
         #[cfg(unix)]
@@ -656,7 +656,7 @@ fn main() -> io::Result<()> {
             ),
             #[cfg(unix)]
             (
-                "easy-herdr cluster <agent-cli>... [prompt]",
+                "easy-herdr cluster [OPTIONS] <agent-cli>... [prompt]",
                 "Run several agents in terminal tabs or windows",
             ),
             #[cfg(unix)]

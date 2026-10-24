@@ -213,7 +213,7 @@ pub fn ensure_ephemeral_server() -> io::Result<()> {
         return validate_running_server_compatibility(false);
     }
     spawn_server_daemon_with_args(
-        ephemeral_server_exe(&current_herdr_exe()?)?,
+        ephemeral_server_exe(&get_spawn_exe()?)?,
         &[crate::server::headless::EPHEMERAL_SERVER_ARG],
     )?;
     wait_for_server_socket(&socket_path, SERVER_READY_TIMEOUT)
@@ -229,6 +229,33 @@ fn ephemeral_server_exe(current_exe: &Path) -> io::Result<PathBuf> {
             format!("failed to resolve {}: {err}", current_exe.display()),
         )
     })
+}
+
+/// The binary to start other herdr processes from. Inside an AppImage, `current_exe`
+/// lies in a FUSE mount that ends with the launching process, so `$APPIMAGE` wins.
+pub(crate) fn get_spawn_exe() -> io::Result<PathBuf> {
+    Ok(pick_spawn_exe(
+        std::env::var_os("APPIMAGE"),
+        std::env::var_os("APPDIR"),
+        current_herdr_exe()?,
+    ))
+}
+
+/// `$APPIMAGE` only while this process runs from `$APPDIR`: panes inherit both
+/// variables, so another build started there must not spawn the AppImage.
+fn pick_spawn_exe(
+    appimage: Option<std::ffi::OsString>,
+    appdir: Option<std::ffi::OsString>,
+    current_exe: PathBuf,
+) -> PathBuf {
+    let is_inside_appdir = appdir
+        .and_then(|appdir| Path::new(&appdir).canonicalize().ok())
+        .zip(current_exe.canonicalize().ok())
+        .is_some_and(|(appdir, exe)| exe.starts_with(appdir));
+    appimage
+        .map(PathBuf::from)
+        .filter(|appimage| is_inside_appdir && appimage.is_file())
+        .unwrap_or(current_exe)
 }
 
 fn current_herdr_exe() -> io::Result<PathBuf> {

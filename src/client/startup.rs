@@ -3,6 +3,14 @@ use super::*;
 pub(super) type PassthroughStartedCallback =
     Box<dyn FnOnce(&crate::protocol::passthrough::PassthroughStarted)>;
 
+/// Window title of a passthrough client: `<label> · <pane id>`, tagged with its cluster group.
+// The Windows passthrough stub never reads the title.
+#[cfg_attr(windows, allow(dead_code))]
+pub(crate) struct PassthroughTitle {
+    pub(crate) label: String,
+    pub(crate) group: Option<u32>,
+}
+
 /// Runs the thin client and enters the main event loop.
 pub fn run_client() -> io::Result<()> {
     run_client_with_mode(None, None, "connecting to server")
@@ -25,8 +33,9 @@ pub(crate) fn run_passthrough(
     _env: Vec<(String, String)>,
     _agent_name: Option<String>,
     _program_name: Option<String>,
-    _title_label: Option<String>,
+    _title: Option<PassthroughTitle>,
     _on_started: Option<PassthroughStartedCallback>,
+    _stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> io::Result<i32> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,

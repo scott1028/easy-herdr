@@ -70,12 +70,16 @@ pub(super) fn launch(
             env.clone(),
             None,
             label.clone(),
-            Some(super::switch_session_label(&session)),
+            Some(crate::client::PassthroughTitle {
+                label: super::switch_session_label(&session),
+                group: None,
+            }),
             Some(Box::new(move |started| {
                 if let Err(err) = write_ready_file(&ready_file, &started.pane_id) {
                     tracing::warn!(path = %ready_file.display(), %err, "cannot write window shell ready file");
                 }
             })),
+            None,
         )
     })
 }
@@ -129,7 +133,7 @@ unset HERDR_SWITCH_ORIG_ZDOTDIR HERDR_SWITCH_WINDOW_ZDOTDIR
     Ok(())
 }
 
-fn write_ready_file(path: &Path, pane_id: &str) -> io::Result<()> {
+pub(super) fn write_ready_file(path: &Path, pane_id: &str) -> io::Result<()> {
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(".tmp");
     let temporary = PathBuf::from(temporary);

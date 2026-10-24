@@ -22,6 +22,7 @@ fn parse_switch_args_reads_cli_name_and_trailing_args() {
         Ok(SwitchCommand::Launch {
             argv: strings(&["codex"]),
             agent_name: None,
+            member: None,
         })
     );
     assert_eq!(
@@ -29,6 +30,7 @@ fn parse_switch_args_reads_cli_name_and_trailing_args() {
         Ok(SwitchCommand::Launch {
             argv: strings(&["opencode", "--model", "x"]),
             agent_name: Some("reviewer".to_owned()),
+            member: None,
         })
     );
     assert_eq!(
@@ -47,6 +49,150 @@ fn parse_switch_args_rejects_ambiguous_input() {
     assert!(parse_switch_args(&strings(&["codex", "rev", "extra"])).is_err());
     assert!(parse_switch_args(&strings(&["--model", "codex"])).is_err());
     assert!(parse_switch_args(&strings(&["--", "codex"])).is_err());
+}
+
+#[test]
+fn parse_switch_args_reads_a_leading_cluster_group() {
+    assert_eq!(
+        parse_switch_args(&strings(&["--cluster-group", "12345", "codex"])),
+        Ok(SwitchCommand::Launch {
+            argv: strings(&["codex"]),
+            agent_name: None,
+            member: Some(ClusterMember {
+                group: 12345,
+                ready_file: None,
+            }),
+        })
+    );
+    assert_eq!(
+        parse_switch_args(&strings(&[
+            "--cluster-group",
+            "7",
+            "opencode",
+            "reviewer",
+            "--",
+            "--model",
+            "x",
+        ])),
+        Ok(SwitchCommand::Launch {
+            argv: strings(&["opencode", "--model", "x"]),
+            agent_name: Some("reviewer".to_owned()),
+            member: Some(ClusterMember {
+                group: 7,
+                ready_file: None,
+            }),
+        })
+    );
+}
+
+#[test]
+fn parse_switch_args_rejects_invalid_cluster_groups() {
+    for (args, error) in [
+        (
+            vec!["--cluster-group"],
+            "missing <PID> after --cluster-group",
+        ),
+        (
+            vec!["--cluster-group", "0", "codex"],
+            "invalid --cluster-group: 0",
+        ),
+        (
+            vec!["--cluster-group", "abc", "codex"],
+            "invalid --cluster-group: abc",
+        ),
+        (
+            vec!["--cluster-group", "+5", "codex"],
+            "invalid --cluster-group: +5",
+        ),
+        (
+            vec!["--cluster-group", "-5", "codex"],
+            "invalid --cluster-group: -5",
+        ),
+        (
+            vec!["--cluster-group", "4294967296", "codex"],
+            "invalid --cluster-group: 4294967296",
+        ),
+        (
+            vec!["--cluster-group", "1", "--cluster-group", "2", "codex"],
+            "--cluster-group given twice",
+        ),
+        (vec!["--cluster-group", "1"], "missing <AGENT_CLI>"),
+        (
+            vec!["codex", "--cluster-group", "1"],
+            "pass agent arguments after `--`",
+        ),
+    ] {
+        assert_eq!(
+            parse_switch_args(&strings(&args)),
+            Err(error.to_owned()),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn parse_switch_args_reads_a_ready_file_only_with_a_cluster_group() {
+    for args in [
+        [
+            "--cluster-group",
+            "7",
+            "--cluster-ready",
+            "/d/1.ready",
+            "codex",
+        ],
+        [
+            "--cluster-ready",
+            "/d/1.ready",
+            "--cluster-group",
+            "7",
+            "codex",
+        ],
+    ] {
+        assert_eq!(
+            parse_switch_args(&strings(&args)),
+            Ok(SwitchCommand::Launch {
+                argv: strings(&["codex"]),
+                agent_name: None,
+                member: Some(ClusterMember {
+                    group: 7,
+                    ready_file: Some(PathBuf::from("/d/1.ready")),
+                }),
+            }),
+            "{args:?}"
+        );
+    }
+    for (args, error) in [
+        (
+            vec!["--cluster-ready", "/d/1.ready", "codex"],
+            "--cluster-ready requires --cluster-group",
+        ),
+        (
+            vec!["--cluster-group", "7", "--cluster-ready"],
+            "missing <PATH> after --cluster-ready",
+        ),
+        (
+            vec![
+                "--cluster-group",
+                "7",
+                "--cluster-ready",
+                "a",
+                "--cluster-ready",
+                "b",
+                "codex",
+            ],
+            "--cluster-ready given twice",
+        ),
+        (
+            vec!["--cluster-group", "7", "codex", "--cluster-ready", "a"],
+            "pass agent arguments after `--`",
+        ),
+    ] {
+        assert_eq!(
+            parse_switch_args(&strings(&args)),
+            Err(error.to_owned()),
+            "{args:?}"
+        );
+    }
 }
 
 #[test]

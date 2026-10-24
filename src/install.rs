@@ -7,11 +7,7 @@ use std::path::{Path, PathBuf};
 pub(crate) fn run(command: &str, args: &[String]) -> i32 {
     #[cfg(unix)]
     let result = (|| -> std::io::Result<()> {
-        let executable = std::env::var_os("APPIMAGE")
-            .map(PathBuf::from)
-            .filter(|path| path.is_file())
-            .map_or_else(std::env::current_exe, Ok)?
-            .canonicalize()?;
+        let executable = crate::server::autodetect::get_spawn_exe()?.canonicalize()?;
         let dir = match args {
             // Use the herdr the shell resolves, so herdr and easy-herdr stay one binary.
             [] => std::env::var_os("PATH")

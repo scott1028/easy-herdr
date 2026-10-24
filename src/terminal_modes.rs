@@ -15,6 +15,115 @@ pub(crate) fn clear_host_mouse_reporting<W: Write>(writer: &mut W) -> io::Result
     writer.flush()
 }
 
+/// Pops more kitty keyboard entries than an agent pushes, which empties the stack.
+#[cfg(unix)]
+const POP_KITTY_KEYBOARD_STACK: &[u8] = b"\x1b[<99u";
+/// SGR, cursor, bracketed paste, focus events and modifyOtherKeys back to their defaults;
+/// each reset is harmless when the mode is already off.
+#[cfg(unix)]
+const RESET_PASSTHROUGH_MODES_SEQUENCE: &[u8] = b"\x1b[0m\x1b[?25h\x1b[?2004l\x1b[?1004l\x1b[>4;0m";
+
+/// Undoes the modes a passthrough agent may leave on when it is stopped before its
+/// own cleanup. Leaves the alternate screen only when the agent entered it.
+#[cfg(unix)]
+pub(crate) fn reset_passthrough_modes<W: Write>(
+    writer: &mut W,
+    leave_alternate_screen: bool,
+) -> io::Result<()> {
+    // Each screen has its own kitty keyboard stack.
+    writer.write_all(POP_KITTY_KEYBOARD_STACK)?;
+    if leave_alternate_screen {
+        writer.write_all(b"\x1b[?1049l")?;
+        writer.write_all(POP_KITTY_KEYBOARD_STACK)?;
+    }
+    writer.write_all(RESET_PASSTHROUGH_MODES_SEQUENCE)?;
+    clear_host_mouse_reporting(writer)
+}
+
+/// Follows `CSI ? 1049/1047/47 h/l` in relayed output, across chunk boundaries.
+#[cfg(unix)]
+#[derive(Debug, Default)]
+pub(crate) struct AltScreenTracker {
+    is_active: bool,
+    scan: AltScreenScan,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Default, Clone, Copy)]
+enum AltScreenScan {
+    #[default]
+    Ground,
+    Escape,
+    CsiStart,
+    /// Inside `CSI ?`: the parameter so far, and whether an earlier one was an alt screen.
+    Private {
+        param: u32,
+        has_alt: bool,
+    },
+    /// Inside any other CSI, until its final byte.
+    OtherCsi,
+}
+
+#[cfg(unix)]
+impl AltScreenTracker {
+    pub(crate) fn get_is_active(&self) -> bool {
+        self.is_active
+    }
+
+    pub(crate) fn track(&mut self, bytes: &[u8]) {
+        let is_alt = |param: u32| matches!(param, 1049 | 1047 | 47);
+        for &byte in bytes {
+            self.scan = match (self.scan, byte) {
+                (_, 0x1b) => AltScreenScan::Escape,
+                // CAN and SUB cancel a sequence without applying it.
+                (_, 0x18 | 0x1a) => AltScreenScan::Ground,
+                // RIS resets the terminal to the primary screen.
+                (AltScreenScan::Escape, b'c') => {
+                    self.is_active = false;
+                    AltScreenScan::Ground
+                }
+                (AltScreenScan::Escape, b'[') => AltScreenScan::CsiStart,
+                (AltScreenScan::CsiStart, b'?') => AltScreenScan::Private {
+                    param: 0,
+                    has_alt: false,
+                },
+                (AltScreenScan::Private { param, has_alt }, b'0'..=b'9') => {
+                    AltScreenScan::Private {
+                        param: param
+                            .saturating_mul(10)
+                            .saturating_add(u32::from(byte - b'0')),
+                        has_alt,
+                    }
+                }
+                (AltScreenScan::Private { param, has_alt }, b';') => AltScreenScan::Private {
+                    param: 0,
+                    has_alt: has_alt || is_alt(param),
+                },
+                (AltScreenScan::Private { param, has_alt }, b'h' | b'l') => {
+                    if has_alt || is_alt(param) {
+                        self.is_active = byte == b'h';
+                    }
+                    AltScreenScan::Ground
+                }
+                (
+                    AltScreenScan::CsiStart
+                    | AltScreenScan::Private { .. }
+                    | AltScreenScan::OtherCsi,
+                    0x20..=0x3f,
+                ) => AltScreenScan::OtherCsi,
+                // C0 controls inside a CSI run without ending it.
+                (
+                    scan @ (AltScreenScan::CsiStart
+                    | AltScreenScan::Private { .. }
+                    | AltScreenScan::OtherCsi),
+                    0x00..=0x1f,
+                ) => scan,
+                _ => AltScreenScan::Ground,
+            };
+        }
+    }
+}
+
 #[cfg(any(windows, test))]
 pub(crate) fn set_windows_mouse_reporting<W: Write>(
     writer: &mut W,
@@ -120,6 +229,93 @@ pub(crate) fn set_direct_host_keyboard_protocol<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn passthrough_mode_reset_turns_agent_modes_off_and_leaves_only_a_tracked_alt_screen() {
+        let modes = b"\x1b[0m\x1b[?25h\x1b[?2004l\x1b[?1004l\x1b[>4;0m".as_slice();
+        let mut output = Vec::new();
+        reset_passthrough_modes(&mut output, false).unwrap();
+        assert_eq!(
+            output,
+            [b"\x1b[<99u", modes, DISABLE_HOST_MOUSE_REPORTING_SEQUENCE].concat()
+        );
+        let mut output = Vec::new();
+        reset_passthrough_modes(&mut output, true).unwrap();
+        assert_eq!(
+            output,
+            [
+                b"\x1b[<99u\x1b[?1049l\x1b[<99u",
+                modes,
+                DISABLE_HOST_MOUSE_REPORTING_SEQUENCE
+            ]
+            .concat()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn alt_screen_tracker_follows_set_and_reset_split_at_every_byte() {
+        for (enter, leave) in [
+            ("\x1b[?1049h", "\x1b[?1049l"),
+            ("\x1b[?1047h", "\x1b[?1047l"),
+            ("\x1b[?47h", "\x1b[?47l"),
+            ("\x1b[?1000;1049h", "\x1b[?25;1049l"),
+        ] {
+            for split in 0..=enter.len() {
+                let mut tracker = AltScreenTracker::default();
+                tracker.track(&enter.as_bytes()[..split]);
+                tracker.track(&enter.as_bytes()[split..]);
+                assert!(tracker.get_is_active(), "{enter:?} split at {split}");
+                tracker.track(&leave.as_bytes()[..split.min(leave.len())]);
+                tracker.track(&leave.as_bytes()[split.min(leave.len())..]);
+                assert!(!tracker.get_is_active(), "{leave:?} split at {split}");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn alt_screen_tracker_keeps_its_state_through_cancelled_sequences_and_clears_on_ris() {
+        let leaves = |tracker: &AltScreenTracker| {
+            let mut output = Vec::new();
+            reset_passthrough_modes(&mut output, tracker.get_is_active()).unwrap();
+            output.windows(8).any(|bytes| bytes == b"\x1b[?1049l")
+        };
+        for cancel in ["\x18", "\x1a"] {
+            let enter = format!("\x1b[?1049{cancel}h");
+            let leave = format!("\x1b[?1049{cancel}l");
+            for split in 0..=enter.len() {
+                let mut tracker = AltScreenTracker::default();
+                tracker.track(&enter.as_bytes()[..split]);
+                tracker.track(&enter.as_bytes()[split..]);
+                assert!(!tracker.get_is_active(), "{enter:?} split at {split}");
+                assert!(!leaves(&tracker));
+
+                let mut tracker = AltScreenTracker::default();
+                tracker.track(b"\x1b[?1049h");
+                tracker.track(&leave.as_bytes()[..split]);
+                tracker.track(&leave.as_bytes()[split..]);
+                assert!(tracker.get_is_active(), "{leave:?} split at {split}");
+                assert!(leaves(&tracker));
+            }
+        }
+        let mut tracker = AltScreenTracker::default();
+        tracker.track(b"\x1b[?1049h\x1b");
+        tracker.track(b"c");
+        assert!(!tracker.get_is_active());
+        assert!(!leaves(&tracker));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn alt_screen_tracker_ignores_other_modes_strings_and_aborted_sequences() {
+        let mut tracker = AltScreenTracker::default();
+        tracker.track(
+            b"text\x1b[?25l\x1b[?1000h\x1b[1049h\x1b]2;?1049h\x07\x1b[?10490h\x1b[?104\x1b[?2004h",
+        );
+        assert!(!tracker.get_is_active());
+    }
 
     #[cfg(not(windows))]
     #[test]

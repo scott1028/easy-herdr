@@ -42,6 +42,7 @@ fn shortcut_names_and_markers_accept_only_supported_commands() {
         SwitchCommand::Launch {
             argv: vec!["codex".into(), "--model".into(), "x".into()],
             agent_name: Some("rev".into()),
+            member: None,
         }
     );
 }

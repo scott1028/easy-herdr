@@ -2,22 +2,43 @@ use std::process::Command;
 
 #[cfg(unix)]
 #[test]
-fn appimage_install_links_to_the_persistent_image_file() {
+fn appimage_install_links_to_the_image_file_only_when_run_from_its_mount() {
     let root = std::env::temp_dir().join(format!("easy-appimage-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let image = root.join("easy herdr.AppImage");
     std::fs::write(&image, "test image").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_easy-herdr"))
-        .args(["install", "--dir"])
-        .arg(&root)
-        .env("APPIMAGE", &image)
-        .output()
-        .unwrap();
-    let installed = std::fs::read_link(root.join("herdr")).unwrap();
-    let expected = image.canonicalize().unwrap();
+    let exe = std::path::Path::new(env!("CARGO_BIN_EXE_easy-herdr"));
+    // The test binary's directory stands in for the AppImage mount.
+    let mount = exe.parent().unwrap();
+    let (image_file, exe_file) = (image.canonicalize().unwrap(), exe.canonicalize().unwrap());
+    for (index, (appdir, expected)) in [
+        (Some(mount), &image_file),
+        (Some(root.as_path()), &exe_file),
+        (None, &exe_file),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let dir = root.join(format!("bin-{index}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut command = Command::new(exe);
+        command
+            .args(["install", "--dir"])
+            .arg(&dir)
+            .env("APPIMAGE", &image);
+        match appdir {
+            Some(appdir) => command.env("APPDIR", appdir),
+            None => command.env_remove("APPDIR"),
+        };
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{appdir:?}: {output:?}");
+        assert_eq!(
+            &std::fs::read_link(dir.join("herdr")).unwrap(),
+            expected,
+            "{appdir:?}"
+        );
+    }
     std::fs::remove_dir_all(root).unwrap();
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(installed, expected);
 }
 
 #[test]

@@ -63,6 +63,7 @@ pub(crate) use passthrough::run_passthrough;
 pub(crate) use shell::{ClientShellConfig, ClientShellState};
 #[cfg(windows)]
 pub(crate) use startup::run_passthrough;
+pub(crate) use startup::PassthroughTitle;
 pub use startup::{run_client, run_terminal_attach};
 pub use terminal_sessions::{run_terminal_session_control, run_terminal_session_observe};
 

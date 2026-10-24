@@ -85,3 +85,58 @@ fn idle_after_work_stays_done_until_the_next_task() {
         assert_eq!(completion.display(status), shown, "{status:?}");
     }
 }
+
+fn agent_named(name: Option<&str>) -> AgentInfo {
+    serde_json::from_value(json!({
+        "terminal_id": "term_1", "name": name, "agent": "claude", "agent_status": "idle",
+        "workspace_id": "w1", "tab_id": "w1:t1", "pane_id": "w1:p2",
+        "focused": false, "revision": 1,
+    }))
+    .unwrap()
+}
+
+#[test]
+fn role_refresh_reports_only_changed_agent_names() {
+    let mut role = None;
+    for (response, change, kept) in [
+        (Ok(Some(None)), None, None),
+        (
+            Ok(Some(Some("planner"))),
+            Some(Some("planner")),
+            Some("planner"),
+        ),
+        (Ok(Some(Some("planner"))), None, Some("planner")),
+        (Err(()), None, Some("planner")),
+        (Ok(None), None, Some("planner")),
+        (
+            Ok(Some(Some("reviewer"))),
+            Some(Some("reviewer")),
+            Some("reviewer"),
+        ),
+        (Ok(Some(None)), Some(None), None),
+    ] {
+        let polled = poll_role_change("w1:p2", &mut role, |method| {
+            let Method::AgentGet(target) = method else {
+                panic!("unexpected API method");
+            };
+            assert_eq!(target.target, "w1:p2");
+            match response {
+                Ok(Some(name)) => Ok(ResponseResult::AgentInfo {
+                    agent: agent_named(name),
+                }),
+                Ok(None) => Ok(ResponseResult::Pong {
+                    version: "test".into(),
+                    protocol: 1,
+                    capabilities: None,
+                }),
+                Err(()) => Err(io::Error::other("server gone").into()),
+            }
+        });
+        assert_eq!(
+            polled,
+            change.map(|name: Option<&str>| name.map(str::to_owned)),
+            "{response:?}"
+        );
+        assert_eq!(role.as_deref(), kept, "{response:?}");
+    }
+}

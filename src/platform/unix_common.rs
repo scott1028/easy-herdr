@@ -607,6 +607,21 @@ pub(crate) fn hostname() -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// Starts `command` in a new session, so it outlives the terminal that launched it.
+pub(crate) fn start_in_new_session(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+
+    // SAFETY: setsid is async-signal-safe and touches only the child.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
 pub(crate) fn local_datetime() -> Option<time::PrimitiveDateTime> {
     let mut timestamp: libc::time_t = 0;
     if unsafe { libc::time(&mut timestamp) } == -1 {

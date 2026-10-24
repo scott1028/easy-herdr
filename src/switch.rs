@@ -5,6 +5,8 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
@@ -59,7 +61,35 @@ enum SwitchCommand {
     Launch {
         argv: Vec<String>,
         agent_name: Option<String>,
+        member: Option<ClusterMember>,
     },
+}
+
+/// A switch launch that a cluster leader opened in a tab.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClusterMember {
+    /// The leader's pid, shown in the window title.
+    group: u32,
+    /// Set with `--exit-when-done`: gets the pane id, and the member follows the leader.
+    ready_file: Option<PathBuf>,
+}
+
+/// How a launch takes part in a cluster; cloned for each launch attempt.
+#[derive(Clone)]
+enum ClusterLaunch {
+    #[cfg(unix)]
+    Leader(cluster::LeaderConfig),
+    Member(ClusterMember),
+}
+
+impl ClusterLaunch {
+    fn group(&self) -> u32 {
+        match self {
+            #[cfg(unix)]
+            Self::Leader(leader) => leader.group,
+            Self::Member(member) => member.group,
+        }
+    }
 }
 
 /// Runs `herdr switch` when this process was started for it; returns the exit code.
@@ -83,9 +113,12 @@ pub(crate) fn maybe_run(raw_args: &[String]) -> Option<i32> {
             }
             Err(err) => report_error(&err),
         },
-        Ok(SwitchCommand::Launch { argv, agent_name }) => {
-            launch(argv, agent_name, None).unwrap_or_else(|err| report_error(&err))
-        }
+        Ok(SwitchCommand::Launch {
+            argv,
+            agent_name,
+            member,
+        }) => launch(argv, agent_name, member.map(ClusterLaunch::Member))
+            .unwrap_or_else(|err| report_error(&err)),
         Ok(SwitchCommand::WindowShell {
             session,
             ready_file,
@@ -205,7 +238,7 @@ fn resolve_session() -> Result<(PathBuf, String), String> {
 fn launch(
     mut argv: Vec<String>,
     agent_name: Option<String>,
-    prompt: Option<String>,
+    cluster: Option<ClusterLaunch>,
 ) -> Result<i32, String> {
     if !crate::platform::capabilities().direct_terminal_attach {
         return Err("not supported on this platform".into());
@@ -216,30 +249,35 @@ fn launch(
     let program_name = shim_launch(&mut argv, &mut env)?;
     crate::session::select_session_for_process(&session)?;
 
-    launch_with_retries(ensure_server, || {
+    // Set by the cluster supervisor or leader watch to end this client.
+    let stop = Arc::new(AtomicBool::new(false));
+    let code = launch_with_retries(ensure_server, || {
         #[cfg(unix)]
-        let on_started = prompt.clone().map(|prompt| {
-            Box::new(
-                move |started: &crate::protocol::passthrough::PassthroughStarted| {
-                    cluster::spawn_prompt(started.pane_id.clone(), prompt);
-                },
-            ) as _
-        });
+        let on_started = cluster
+            .as_ref()
+            .and_then(|cluster| cluster::get_started_callback(cluster, &stop));
         #[cfg(not(unix))]
-        let on_started = {
-            let _ = &prompt;
-            None
-        };
+        let on_started = None;
         crate::client::run_passthrough(
             argv.clone(),
             cwd.clone(),
             env.clone(),
             agent_name.clone(),
             program_name.clone(),
-            Some(switch_session_label(&session)),
+            Some(crate::client::PassthroughTitle {
+                label: switch_session_label(&session),
+                group: cluster.as_ref().map(ClusterLaunch::group),
+            }),
             on_started,
+            Some(stop.clone()),
         )
-    })
+    })?;
+    if let Some(ClusterLaunch::Member(member)) = &cluster {
+        if stop.load(Ordering::SeqCst) {
+            eprintln!("herdr-switch: cluster {} ended", member.group);
+        }
+    }
+    Ok(code)
 }
 
 /// Retries while the group server is unreachable, for example after it exited while idle.
@@ -341,6 +379,35 @@ fn parse_switch_args(args: &[String]) -> Result<SwitchCommand, String> {
         [flag] if flag == "--session-name" => return Ok(SwitchCommand::SessionName),
         _ => {}
     }
+    // Hidden: cluster tabs pass the leader's pid, and maybe a ready file, before the agent CLI.
+    let (mut group, mut ready_file, mut args) = (None, None, args);
+    while let Some(flag) = args
+        .first()
+        .filter(|flag| matches!(flag.as_str(), "--cluster-group" | "--cluster-ready"))
+    {
+        let is_group = flag == "--cluster-group";
+        let value = args.get(1).ok_or_else(|| {
+            let name = if is_group { "<PID>" } else { "<PATH>" };
+            format!("missing {name} after {flag}")
+        })?;
+        let is_repeated = if is_group {
+            let pid = value
+                .parse::<u32>()
+                .ok()
+                .filter(|pid| *pid > 0 && value.bytes().all(|byte| byte.is_ascii_digit()))
+                .ok_or_else(|| format!("invalid --cluster-group: {value}"))?;
+            group.replace(pid).is_some()
+        } else {
+            ready_file.replace(PathBuf::from(value)).is_some()
+        };
+        if is_repeated {
+            return Err(format!("{flag} given twice"));
+        }
+        args = &args[2..];
+    }
+    if ready_file.is_some() && group.is_none() {
+        return Err("--cluster-ready requires --cluster-group".into());
+    }
     let separator = args.iter().position(|arg| arg == "--");
     let (positionals, extra) = match separator {
         Some(index) => (&args[..index], &args[index + 1..]),
@@ -361,7 +428,11 @@ fn parse_switch_args(args: &[String]) -> Result<SwitchCommand, String> {
     }
     let mut argv = vec![program.clone()];
     argv.extend_from_slice(extra);
-    Ok(SwitchCommand::Launch { argv, agent_name })
+    Ok(SwitchCommand::Launch {
+        argv,
+        agent_name,
+        member: group.map(|group| ClusterMember { group, ready_file }),
+    })
 }
 
 /// Session name for one launch directory: readable prefix plus a hash of the canonical path.

@@ -113,11 +113,13 @@ HERDR_SWITCH_TERMINAL="kitty" easy-herdr codex
 
 這讓預設的 Codex/OpenCode 工具呼叫使用啟動 session 的環境。
 
-視窗標題包含啟動目錄標籤與 pane ID；程式提供標題時，再接上該標題：
+視窗標題包含啟動目錄標籤、pane ID 與括號標籤；程式提供標題時，再接上該標題：
 
 ```text
-{status} {dir} · {pane_id} — {program title}
+{status} {dir} · {pane_id} ({role}, group: {pid}) — {program title}
 ```
+
+括號標籤顯示 agent 名稱；由 `cluster` 開的視窗，還會加上 cluster 的 process ID。用不到的部分不顯示，兩者都沒有時，整個括號也不顯示。
 
 💤 閒置 · ⏳ 工作中 · ✅ 完成 · ✋ 等待回應。狀態未知或沒有 agent 時不顯示圖示。**完成**表示工作已結束，會保持顯示直到下一個任務開始。
 
@@ -144,6 +146,121 @@ kitty 需要啟用 remote control 並設定監聽 socket（`listen_on`，由 `KI
 - 沒有 `--` 時，最後一個參數若包含空白或上述 agent 名稱字元以外的字元，且不以 `-` 開頭，就視為 prompt。合法的單字名稱一律視為 agent，找不到就報錯。
 - 單字 prompt 請放在 `--` 後，也可在其後輸入多個單字，程式會用空白串成 prompt；`--` 後不能留空，prompt 也不能是空字串或只有空白。
 - 開啟任何終端機前，會先驗證所有 agent。此指令不接受 agent 選項；完整用法請看 `easy-herdr cluster --help`。
+
+### 讓 cluster 做完自己收尾
+
+預設情況下，任務做完後 cluster 的每個 agent 都會一直開著，要你自己關視窗。加上 `--exit-when-done`，cluster 會自己收尾；加上 `--background`，它還能完全不開視窗，適合只能用 SSH 連線的主機。不加這些選項時，cluster 的行為和以前完全一樣。
+
+可以把它想成會議室預約：大家安靜一段時間後就歸還會議室，最晚也會在預約時間到時歸還。
+
+```text
+啟動 ──► 有 agent 工作過 ──► 所有 agent 都 idle 滿 --idle-exit（5m）──► 關閉 pane，exit 0
+啟動 ──► 到了 --timeout（2h）還沒結束 ──► 照樣關閉 pane，exit 124
+```
+
+至少要有一個 agent 工作過，才開始計算 idle 時間；期間只要又有 agent 開始工作，就重新計時。cluster 只關閉自己開的 pane，同目錄的其他 agent 不受影響。沒有別人使用時，herdr server 約 5 秒後會自己結束。
+
+| 選項 | 不加時 | 加上後 |
+| --- | --- | --- |
+| `--exit-when-done` | 任務做完後，視窗與 agent 一直開著，要自己關。 | 所有 agent 都 idle 滿 `--idle-exit` 後，關閉 cluster 的所有 agent pane。前景模式接著印一行訊息後 exit 0。 |
+| `--timeout <D>` | 預設 `2h`，只在搭配 `--exit-when-done` 或 `--background` 時有作用。 | 超過 D 還沒結束，就照樣關閉 pane。前景模式印出 `timed out after D` 並 exit 124；背景模式改在目前目錄寫 log。 |
+| `--idle-exit <D>` | 預設 `5m`，規則同上。 | 設定所有 agent 要 idle 多久才算完成。 |
+| `--background` | 第一個 agent 用目前的終端機，其他 agent 開新分頁或新視窗。 | 不開任何視窗，所有 agent 在看不見的終端機裡執行；指令印出 process ID 後立刻以 exit 0 返回，終端機可以繼續用，也可以直接登出。自動包含 `--exit-when-done`，而且一定要給 prompt。 |
+
+`D` 是正整數加上 `s`、`m` 或 `h`，例如 `30s`、`90m`、`2h`。選項一律寫在第一個 agent 名稱前面，因為 agent 後面的最後一個參數會被當成 prompt。
+
+看到什麼、exit code 是多少，取決於 cluster 怎麼執行：
+
+| 行程 | 輸出 | exit code |
+| --- | --- | --- |
+| 前景 cluster | 在 stdout 印一行結束訊息 | 完成或所有 agent 都結束時為 0，timeout 為 124，失去 herdr server 時為 1 |
+| 背景 launcher（你輸入的指令） | 四行啟動訊息 | 啟動後立刻 exit 0 |
+| 背景 supervisor（脫離終端機的行程） | 不輸出，因為 stdout 導到 `/dev/null`；timeout 時寫 timeout log | timeout 為 124，`kill` 後為 143，啟動步驟失敗為 1，其他為 0 |
+
+### 哪些選項可以一起用
+
+`--background` 已經包含 `--exit-when-done`，兩個都寫不會出錯，只是多餘。背景模式不能關掉自動收尾：沒人看著它，不收尾的話 agent 會一直跑下去。
+
+| 選項 | 允許 | 結果 |
+| --- | --- | --- |
+| （無） | 可以 | 和以前相同 |
+| `--exit-when-done` | 可以 | 前景，timeout 2h，idle 5m |
+| `--exit-when-done --timeout 3h --idle-exit 10m` | 可以 | 前景，timeout 3h，idle 10m |
+| `--background` | 可以 | 背景，timeout 2h，idle 5m |
+| `--background --exit-when-done` | 可以 | 與上一列相同 |
+| `--background --timeout 4h` | 可以 | 背景，timeout 4h；timeout 時寫 log |
+| `--background --exit-when-done --timeout 4h --idle-exit 10m` | 可以 | 背景，timeout 4h，idle 10m |
+| `--timeout 1h` 單獨使用 | 不行，exit 2 | `--timeout requires --exit-when-done or --background` |
+| `--idle-exit 10m` 單獨使用 | 不行，exit 2 | `--idle-exit requires --exit-when-done or --background` |
+| `--background` 沒給 prompt | 不行，exit 2 | `--background requires a prompt` |
+| 同一個選項寫兩次，例如 `--timeout 1h --timeout 2h` | 不行，exit 2 | `--timeout given twice` |
+
+用法錯誤時不會開任何視窗。
+
+### cluster 使用範例
+
+```bash
+# 不用新選項：和以前一樣
+easy-herdr cluster claude claude claude codex -- "You are the planner. ..."
+
+# 前景，做完自動關閉（timeout 2h、idle 5m 都用預設）
+easy-herdr cluster --exit-when-done claude claude claude codex -- "You are the planner. ..."
+
+# 前景，最多跑 3 小時，全部 idle 10 分鐘才算完成
+easy-herdr cluster --exit-when-done --timeout 3h --idle-exit 10m claude claude claude codex -- "..."
+
+# 背景（只有 SSH 的主機）：立刻返回，timeout 用預設 2h
+easy-herdr cluster --background claude claude claude codex -- "..."
+
+# 背景，自訂 timeout
+easy-herdr cluster --background --timeout 4h claude codex -- "..."
+```
+
+背景啟動時會印出查看與停止的方法：
+
+```text
+easy-herdr cluster 12345 started in the background
+watch: easy-herdr --session sw-easy-herdr-1a2b3c4d5e6f agent list
+stop:  kill 12345
+log:   ./easy-herdr-cluster-*-12345.log is written only if it times out
+```
+
+前景 cluster 結束時，會在原本的終端機印一行訊息：
+
+```text
+easy-herdr cluster 12345: all agents idle for 5m; closed 4 agent panes
+easy-herdr cluster 12345: timed out after 2h; closed 4 agent panes
+```
+
+`kill <pid>` 會乾淨地停止背景 cluster：關閉它的 pane、清掉工作用的檔案，不寫 log。timeout log 的檔名是 `./easy-herdr-cluster-<YYYYMMDD-HHMMSS>-<pid>.log`，時間取本地的啟動時間；內容有各 agent 的狀態、狀態變化的時間軸，以及每個 agent 畫面的最後 200 行。
+
+### cluster 的視窗標題
+
+cluster 開的每個視窗都會顯示群組，也就是 cluster 的 process ID；agent 有名稱後，也會顯示角色：
+
+```text
+easy-herdr · w1:p1 (planner, group: 12345)
+```
+
+角色就是 herdr 的 agent 名稱。cluster 視窗的角色來自 `easy-herdr agent rename <pane> <name>`，例如 planner 替自己改名；改名後約 2 秒內，標題就會更新。`easy-herdr switch <cli> <name>` 則是替一般的 switch 視窗命名，這種視窗只顯示 `(name)`，沒有群組。
+
+### 使用自動收尾前要知道的事
+
+自動收尾可能誤判的情況：
+
+- 「所有 agent 都 idle」也可能是 planner 停下來等你回答，`--idle-exit` 就是緩衝時間。
+- Herdr 一直偵測不到的 agent CLI，會讓 cluster 一直跑到 `--timeout`。
+
+背景模式的限制：
+
+- 沒有人能回答 agent 的啟動或核准對話框。卡住的 agent 會顯示為 blocked，最後在 `--timeout` 時結束並留下 log。
+- agent 若要求新增 pane、tab 或 workspace，easy-herdr 仍會嘗試開原生視窗，在沒有 GUI 的主機上會失敗。
+- 需要可寫入的工作目錄來放 timeout log；不可寫入時，指令會立刻以狀態碼 1 結束。
+
+出問題時去哪裡看：
+
+- 背景模式的診斷訊息（例如啟動中止、log 寫入失敗）寫在 session 設定目錄的 `herdr-cluster.log`：`~/.config/easy-herdr/sessions/<session>/herdr-cluster.log`（debug 版為 `easy-herdr-dev`）。
+- systemd-logind 若設定 `KillUserProcesses=yes`，登出時會結束 SSH session scope 裡的所有行程，包括從那裡啟動的背景 cluster。只執行 `loginctl enable-linger` 不夠：它只讓你的 user manager 繼續執行，cluster 還必須在 session scope 之外執行。例如在啟用 linger 後，於 user manager 的 scope 裡啟動：`systemd-run --user --scope easy-herdr cluster --background …`。說明請見 [`KillUserProcesses=`](https://www.freedesktop.org/software/systemd/man/latest/logind.conf.html#KillUserProcesses=)。
 
 ## 與 herdr 的差異
 

@@ -9,7 +9,11 @@ enum EscapeState {
 }
 
 pub(super) struct TitleRewriter {
-    pub(super) prefix: String,
+    prefix: String,
+    group: Option<u32>,
+    role: Option<String>,
+    /// ` (role, group: G)`, ` (group: G)`, ` (role)` or empty.
+    tag: String,
     pending: Vec<u8>,
     passthrough_osc: bool,
     previous_escape: bool,
@@ -30,6 +34,20 @@ impl TitleRewriter {
         changed
     }
 
+    pub(super) fn set_role(&mut self, role: Option<String>) -> bool {
+        if self.role == role {
+            return false;
+        }
+        self.role = role;
+        self.tag = get_tag(self.role.as_deref(), self.group);
+        true
+    }
+
+    /// The prefix and its tag, without status or program title.
+    pub(super) fn label(&self) -> String {
+        format!("{}{}", self.prefix, self.tag)
+    }
+
     pub(super) fn status_title(&self) -> Vec<u8> {
         let mut out = b"\x1b]2;".to_vec();
         self.write_payload(&mut out);
@@ -43,15 +61,19 @@ impl TitleRewriter {
             out.push(b' ');
         }
         out.extend_from_slice(self.prefix.as_bytes());
+        out.extend_from_slice(self.tag.as_bytes());
         if !self.last_title.is_empty() {
             out.extend_from_slice(" — ".as_bytes());
             out.extend_from_slice(&self.last_title);
         }
     }
 
-    pub(super) fn new(prefix: &str) -> Self {
+    pub(super) fn new(prefix: &str, group: Option<u32>, role: Option<String>) -> Self {
         Self {
             prefix: crate::config::sanitize_window_title_text(prefix).unwrap_or_default(),
+            group,
+            tag: get_tag(role.as_deref(), group),
+            role,
             pending: Vec::new(),
             passthrough_osc: false,
             previous_escape: false,
@@ -166,6 +188,17 @@ impl TitleRewriter {
         self.previous_escape = false;
         self.escape = EscapeState::Ground;
         self.utf8_remaining = 0;
+    }
+}
+
+/// The role is sanitized like the prefix; a role with no visible text counts as none.
+fn get_tag(role: Option<&str>, group: Option<u32>) -> String {
+    let role = role.and_then(crate::config::sanitize_window_title_text);
+    match (role, group) {
+        (Some(role), Some(group)) => format!(" ({role}, group: {group})"),
+        (None, Some(group)) => format!(" (group: {group})"),
+        (Some(role), None) => format!(" ({role})"),
+        (None, None) => String::new(),
     }
 }
 

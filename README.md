@@ -121,11 +121,13 @@ New windows load bash login profiles or zsh login startup files. For bash/zsh, t
 
 This keeps the default Codex/OpenCode tool calls attached to the launch session's environment.
 
-Window titles use the launch-directory label and pane ID, followed by the program's title when it supplies one:
+Window titles use the launch-directory label and pane ID, an optional tag, and the program's title when it supplies one:
 
 ```text
-{status} {dir} · {pane_id} — {program title}
+{status} {dir} · {pane_id} ({role}, group: {pid}) — {program title}
 ```
+
+The tag shows the agent name and, for windows that `cluster` opens, the cluster's process ID. A part that does not apply is left out, and so is the whole tag when neither does.
 
 💤 idle · ⏳ working · ✅ done · ✋ blocked. There is no icon for unknown status or no agent. **Done** means finished work and stays visible until the next task begins.
 
@@ -152,6 +154,121 @@ The optional prompt goes only to the first agent. easy-herdr polls for a detecte
 - Without `--`, the final argument is a prompt if it contains spaces or characters outside the agent-name set above and does not start with `-`. Plain names are always agents; unknown names are errors.
 - Use `--` for a one-word prompt, or to join several prompt words. You must provide a prompt after it; empty or whitespace-only prompts are rejected.
 - All agents are validated before any terminal opens. Agent options are not accepted; use `easy-herdr cluster --help` for usage.
+
+### Let the cluster close itself
+
+By default, a cluster keeps every agent open after the task until you close the windows yourself. Add `--exit-when-done` and the cluster cleans up after itself. Add `--background` and it also runs without any window, which suits a host you reach only over SSH. Without these options, cluster behaves exactly as before.
+
+Think of it as a meeting-room booking: the room is freed once everyone has been quiet for a while, or when the booking ends at the latest.
+
+```text
+start ──► an agent works ──► every agent idle for --idle-exit (5m) ──► close panes, exit 0
+start ──► still running when --timeout (2h) ends ──► close panes anyway, exit 124
+```
+
+The idle clock starts only after some agent has worked, and any new work resets it. Cluster closes only its own panes, so other agents in the same directory keep running. When nothing else uses the herdr server, it exits by itself about 5 s later.
+
+| Option | Without it | With it |
+| --- | --- | --- |
+| `--exit-when-done` | Windows and agents stay open after the task; you close them. | Once every agent has stayed idle for `--idle-exit`, cluster closes all of its agent panes. In the foreground it then prints one line and exits 0. |
+| `--timeout <D>` | Default `2h`. Takes effect only with `--exit-when-done` or `--background`. | When D has passed and the cluster is still running, it closes its panes anyway. In the foreground it prints `timed out after D` and exits 124; in the background it writes a log in the current directory instead. |
+| `--idle-exit <D>` | Default `5m`, under the same rule. | Sets how long every agent must stay idle before the task counts as done. |
+| `--background` | The first agent runs in this terminal; the others open tabs or windows. | No windows: every agent runs in a hidden terminal, and the command prints its process ID and exits 0 at once. You can keep using the terminal or log out. Implies `--exit-when-done` and requires a prompt. |
+
+`D` is a positive whole number followed by `s`, `m` or `h`, such as `30s`, `90m` or `2h`. Put the options before the first agent name, because the last argument after the agents is the prompt.
+
+What you see, and the exit code, depends on how the cluster runs:
+
+| Process | Prints | Exit code |
+| --- | --- | --- |
+| Foreground cluster | One end line on stdout | 0 when done or when every agent exits, 124 on timeout, 1 if it loses the herdr server |
+| Background launcher (the command you type) | The four start lines | 0 right after the start |
+| Background supervisor (the detached process) | Nothing, since its stdout goes to `/dev/null`; it writes the timeout log on timeout | 124 on timeout, 143 after `kill`, 1 if a launch step fails, otherwise 0 |
+
+### Which options go together
+
+`--background` already includes `--exit-when-done`, so writing both is allowed, just redundant. Background mode cannot turn auto exit off: nobody is watching it, so without auto exit its agents would run forever.
+
+| Options | Allowed | Result |
+| --- | --- | --- |
+| none | yes | Same as before |
+| `--exit-when-done` | yes | Foreground, timeout 2h, idle 5m |
+| `--exit-when-done --timeout 3h --idle-exit 10m` | yes | Foreground, timeout 3h, idle 10m |
+| `--background` | yes | Background, timeout 2h, idle 5m |
+| `--background --exit-when-done` | yes | Same as the row above |
+| `--background --timeout 4h` | yes | Background, timeout 4h; writes a log on timeout |
+| `--background --exit-when-done --timeout 4h --idle-exit 10m` | yes | Background, timeout 4h, idle 10m |
+| `--timeout 1h` alone | no, exit 2 | `--timeout requires --exit-when-done or --background` |
+| `--idle-exit 10m` alone | no, exit 2 | `--idle-exit requires --exit-when-done or --background` |
+| `--background` without a prompt | no, exit 2 | `--background requires a prompt` |
+| The same option twice, such as `--timeout 1h --timeout 2h` | no, exit 2 | `--timeout given twice` |
+
+A rejected command opens no window.
+
+### Cluster examples
+
+```bash
+# Without the new options: same as before
+easy-herdr cluster claude claude claude codex -- "You are the planner. ..."
+
+# Foreground; close everything when done (timeout 2h, idle 5m)
+easy-herdr cluster --exit-when-done claude claude claude codex -- "You are the planner. ..."
+
+# Foreground; run at most 3 hours, and count as done after 10 idle minutes
+easy-herdr cluster --exit-when-done --timeout 3h --idle-exit 10m claude claude claude codex -- "..."
+
+# Background on an SSH-only host; returns at once, timeout 2h
+easy-herdr cluster --background claude claude claude codex -- "..."
+
+# Background with a longer timeout
+easy-herdr cluster --background --timeout 4h claude codex -- "..."
+```
+
+A background start prints how to watch and stop it:
+
+```text
+easy-herdr cluster 12345 started in the background
+watch: easy-herdr --session sw-easy-herdr-1a2b3c4d5e6f agent list
+stop:  kill 12345
+log:   ./easy-herdr-cluster-*-12345.log is written only if it times out
+```
+
+A foreground cluster prints one line in your terminal when it ends:
+
+```text
+easy-herdr cluster 12345: all agents idle for 5m; closed 4 agent panes
+easy-herdr cluster 12345: timed out after 2h; closed 4 agent panes
+```
+
+`kill <pid>` stops a background cluster cleanly: it closes its panes, removes its working files and writes no log. The timeout log is `./easy-herdr-cluster-<YYYYMMDD-HHMMSS>-<pid>.log`, named after the local start time. It lists the agents, a timeline of their status changes and each agent's last 200 screen lines.
+
+### Cluster window titles
+
+Every window that cluster opens shows its group, which is the cluster's process ID. Once an agent has a name, its role shows too:
+
+```text
+easy-herdr · w1:p1 (planner, group: 12345)
+```
+
+The role is the herdr agent name. Cluster windows get it from `easy-herdr agent rename <pane> <name>`, for example when the planner renames itself, and the title follows a rename within about 2 s. `easy-herdr switch <cli> <name>` names a plain switch window instead, which shows `(name)` without a group.
+
+### Before you rely on auto exit
+
+When auto exit can guess wrong:
+
+- "Every agent idle" can also mean a planner waiting for your answer. `--idle-exit` is the safety margin.
+- An agent CLI that Herdr never detects keeps the cluster running until `--timeout`.
+
+Background mode limits:
+
+- Nobody can answer startup or approval dialogs. A stuck agent shows as blocked, and the cluster ends at `--timeout` with a log.
+- If an agent asks for a new pane, tab or workspace, easy-herdr still tries to open a native window, which fails on a host with no GUI.
+- It needs a writable working directory for the timeout log; otherwise the command exits 1 at once.
+
+Where to look when something goes wrong:
+
+- Background diagnostics, such as an aborted launch or a failed log write, go to `herdr-cluster.log` in the session's config dir: `~/.config/easy-herdr/sessions/<session>/herdr-cluster.log` (`easy-herdr-dev` for debug builds).
+- If systemd-logind uses `KillUserProcesses=yes`, logging out ends every process in your SSH session's scope, a background cluster included. `loginctl enable-linger` alone does not prevent that: it keeps your user manager running, but the cluster must also run outside the session scope. For example, with linger enabled, start it in a user-manager scope: `systemd-run --user --scope easy-herdr cluster --background …`. See [`KillUserProcesses=`](https://www.freedesktop.org/software/systemd/man/latest/logind.conf.html#KillUserProcesses=).
 
 ## Differences from herdr
 
