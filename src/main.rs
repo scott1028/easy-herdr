@@ -570,8 +570,8 @@ fn main() -> io::Result<()> {
         std::process::exit(2);
     }
 
-    if args.get(1).map(String::as_str) == Some("install") {
-        std::process::exit(install::run(&args[2..]));
+    if let Some(command @ ("install" | "uninstall")) = args.get(1).map(String::as_str) {
+        std::process::exit(install::run(command, &args[2..]));
     }
     if args.get(1).map(String::as_str) == Some("update") {
         let options = update::parse_self_update_args(&args[2..]).unwrap_or_default();
@@ -611,6 +611,19 @@ fn main() -> io::Result<()> {
         platform::begin_cli_output();
         println!("easy-herdr — terminal workspace manager for AI coding agents");
         println!();
+        #[cfg(unix)]
+        println!("Usage: easy-herdr switch <agent-cli> [agent-name] [-- agent-args...]");
+        #[cfg(unix)]
+        println!("       easy-herdr cluster <agent-cli>... [prompt]");
+        #[cfg(unix)]
+        println!("       easy-herdr <agent-cli> [agent-args...]");
+        #[cfg(unix)]
+        println!("       easy-herdr install [--dir DIR]");
+        #[cfg(unix)]
+        println!("       easy-herdr uninstall [--dir DIR]");
+        #[cfg(unix)]
+        println!("       easy-herdr [options]");
+        #[cfg(not(unix))]
         println!("Usage: easy-herdr [options]");
         println!("       easy-herdr --session <name> [options]");
         println!("       easy-herdr --machine <label-or-id> <command>");
@@ -633,17 +646,34 @@ fn main() -> io::Result<()> {
         println!("       herdr pane <subcommand> ...");
         println!("       herdr session <subcommand> ...");
         println!("       herdr integration <subcommand> ...");
-        #[cfg(unix)]
-        println!("       easy-herdr switch <agent-cli> [agent-name] [-- agent-args...]");
-        #[cfg(unix)]
-        println!("       easy-herdr cluster <agent-cli>... [prompt]");
-        #[cfg(unix)]
-        println!("       easy-herdr <agent-cli> [agent-args...]");
-        #[cfg(unix)]
-        println!("       easy-herdr install [--dir DIR]");
         println!();
         println!("Common commands:");
         for (command, description) in [
+            #[cfg(unix)]
+            (
+                "easy-herdr switch <agent-cli> [agent-name]",
+                "Run an agent as an invisible pane grouped by directory",
+            ),
+            #[cfg(unix)]
+            (
+                "easy-herdr cluster <agent-cli>... [prompt]",
+                "Run several agents in terminal tabs or windows",
+            ),
+            #[cfg(unix)]
+            (
+                "easy-herdr <agent-cli> [agent-args...]",
+                "Run an agent CLI in switch mode with all its arguments",
+            ),
+            #[cfg(unix)]
+            (
+                "easy-herdr install [--dir DIR]",
+                "Install the herdr command symlink",
+            ),
+            #[cfg(unix)]
+            (
+                "easy-herdr uninstall [--dir DIR]",
+                "Remove the herdr symlink and restore its backup",
+            ),
             ("herdr", "Launch or attach to the persistent session"),
             (
                 "herdr status [server|client]",
@@ -704,26 +734,6 @@ fn main() -> io::Result<()> {
                 "herdr integration <subcommand>",
                 "Manage built-in agent integrations",
             ),
-            #[cfg(unix)]
-            (
-                "easy-herdr switch <agent-cli> [agent-name]",
-                "Run an agent as an invisible pane grouped by directory",
-            ),
-            #[cfg(unix)]
-            (
-                "easy-herdr cluster <agent-cli>... [prompt]",
-                "Run several agents in terminal tabs or windows",
-            ),
-            #[cfg(unix)]
-            (
-                "easy-herdr <agent-cli> [agent-args...]",
-                "Run an agent CLI in switch mode with all its arguments",
-            ),
-            #[cfg(unix)]
-            (
-                "easy-herdr install [--dir DIR]",
-                "Install the herdr command symlink",
-            ),
         ] {
             println!("  {command:<32} {description}");
         }
@@ -743,13 +753,13 @@ fn main() -> io::Result<()> {
         println!("  --version, -V       Print version and exit");
         println!("  --help, -h          Show this help");
         println!();
+        #[cfg(unix)]
+        println!("Agent shortcuts accept PATH commands and bash/zsh functions or aliases.");
+        println!("{SELF_UPDATE_NOTICE}");
         println!("Config: {}", config::config_path().display());
         println!("Logs:   {}", logging::help_log_paths_summary());
         println!("Env:    HERDR_CONFIG_PATH overrides config file path");
         println!("Home:   https://herdr.dev");
-        #[cfg(unix)]
-        println!("Agent shortcuts accept PATH commands and bash/zsh functions or aliases.");
-        println!("{SELF_UPDATE_NOTICE}");
         println!();
         println!("{}", cli::AGENT_HELP_FOOTER);
         return Ok(());
@@ -800,6 +810,7 @@ fn main() -> io::Result<()> {
                 "remote-client-bridge",
                 "update",
                 "install",
+                "uninstall",
                 "status",
                 "config",
                 "channel",

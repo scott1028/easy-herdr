@@ -38,13 +38,21 @@ On Unix, install the `herdr` command that agent skills and hooks call:
 easy-herdr install
 ```
 
-This creates `herdr` as a symlink beside the current executable. To use another existing, writable directory:
+This replaces the first `herdr` on `PATH` with a symlink to easy-herdr, so `herdr` and `easy-herdr` always run the same binary. When `PATH` has no `herdr`, the symlink goes beside the current executable. To use another existing, writable directory:
 
 ```bash
 easy-herdr install --dir ~/.local/bin
 ```
 
-An existing different `herdr` entry is renamed to `herdr.bak-<timestamp>` (UTC `YYYYmmddHHMMSS`). An existing backup is never overwritten. Re-running is a no-op when the symlink already resolves to the same executable. `install` is unsupported on Windows.
+An existing different `herdr` entry is renamed to `herdr.bak-<timestamp>` (UTC `YYYYmmddHHMMSS`). An existing backup is never overwritten. Re-running is a no-op when the symlink already resolves to the same executable. If the directory is not writable, `install` fails without changing anything; rename the old `herdr` yourself, for example with `sudo`, or pass `--dir`. `install` is unsupported on Windows.
+
+To undo it:
+
+```bash
+easy-herdr uninstall
+```
+
+`uninstall` picks the directory the same way, or takes `--dir DIR`. It removes `herdr` only when it is a symlink to the current easy-herdr, then restores the newest `herdr.bak-<timestamp>`, or `herdr.bak` when there is no timestamped backup. Other backups stay in place. It handles one directory per run. If another directory still has a `herdr` link to easy-herdr, remove it with `easy-herdr uninstall --dir DIR`. When `herdr` is anything else, it changes nothing and exits 0. `uninstall` is unsupported on Windows.
 
 For an AppImage, make the downloaded file executable and run its `install` command, for example:
 
@@ -52,7 +60,7 @@ For an AppImage, make the downloaded file executable and run its `install` comma
 ./easy-herdr-linux-x86_64.AppImage install
 ```
 
-AppImages need FUSE, or `APPIMAGE_EXTRACT_AND_RUN=1`. When `APPIMAGE` names an existing file, installation links to that persistent image and defaults to its directory, rather than the temporary mounted executable.
+AppImages need FUSE, or `APPIMAGE_EXTRACT_AND_RUN=1`. When `APPIMAGE` names an existing file, installation links to that persistent image and, when `PATH` has no `herdr`, defaults to its directory, rather than the temporary mounted executable.
 
 ## Quick start
 
@@ -147,7 +155,7 @@ The optional prompt goes only to the first agent. easy-herdr polls for a detecte
 
 ## Differences from herdr
 
-- The binary is named `easy-herdr`; `install` provides the `herdr` symlink for integrations. Switch mode is Linux/macOS only.
+- The binary is named `easy-herdr`; `install` provides the `herdr` symlink for integrations, and `uninstall` restores the previous `herdr`. Switch mode is Linux/macOS only.
 - On Linux/macOS, config and session data default to `~/.config/easy-herdr`, with state under `~/.local/state/easy-herdr`. Debug builds use `easy-herdr-dev`. `XDG_CONFIG_HOME` and `XDG_STATE_HOME` override the base directories; Windows uses `APPDATA` and `LOCALAPPDATA`.
 - If the new `config.toml` is missing, easy-herdr copies only that file once from the legacy directory at the same base path (`herdr`, or `herdr-dev` for debug builds). The usual source is `~/.config/herdr/config.toml`. Sessions and plugins are not migrated.
 - There is no binary self-update or background binary version check. `easy-herdr update` and `easy-herdr channel set` print the [Releases link](https://github.com/scott1028/herdr/releases) and exit 1. `easy-herdr channel show` still prints the configured channel and exits 0. Agent-detection manifest updates still run under their existing policy and configuration.

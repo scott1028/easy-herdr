@@ -105,6 +105,15 @@ pub(crate) fn read_fd(fd: std::os::fd::RawFd, data: &mut [u8]) -> std::io::Resul
     }
 }
 
+/// Whether the current user may execute `path`, by the same rule the shell uses.
+pub(crate) fn get_can_execute(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt as _;
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    unsafe { libc::access(path.as_ptr(), libc::X_OK) == 0 }
+}
+
 /// The tty's erase character (VERASE) on stdin, when one is set.
 pub(super) fn terminal_erase_byte() -> Option<u8> {
     let mut termios: libc::termios = unsafe { std::mem::zeroed() };

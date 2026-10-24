@@ -103,7 +103,13 @@ pub(crate) fn get_is_command(name: &str) -> bool {
     // Commands dispatched in main.rs, outside the CLI spec.
     matches!(
         name,
-        "switch" | "cluster" | "install" | "client" | "remote-api-bridge" | "remote-client-bridge"
+        "switch"
+            | "cluster"
+            | "install"
+            | "uninstall"
+            | "client"
+            | "remote-api-bridge"
+            | "remote-client-bridge"
     ) || spec::command().find_subcommand(name).is_some()
 }
 
