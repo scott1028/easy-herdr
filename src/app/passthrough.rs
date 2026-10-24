@@ -82,7 +82,7 @@ impl App {
             .with_passthrough(spawn.passthrough);
         let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
         let host_terminal_theme = self.state.host_terminal_theme;
-        let host_terminal_appearance = self.state.host_terminal_appearance;
+        let host_terminal_appearance = self.pane_host_terminal_appearance();
 
         let (ws_idx, tab_idx, terminal, runtime, created_workspace) =
             if let Some(ws) = self.state.workspaces.first_mut() {

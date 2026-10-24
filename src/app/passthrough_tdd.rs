@@ -163,3 +163,63 @@ async fn unnamed_tab_shows_the_requested_program_instead_of_its_launcher() {
     assert_eq!(tab_labels(&app), ["codex-personal"]);
     app.close_passthrough_terminal(&spawned.terminal_id);
 }
+
+#[tokio::test]
+async fn pane_spawned_during_appearance_hold_gets_consistent_pair() {
+    use crate::terminal_theme::{HostAppearance, RgbColor, TerminalTheme};
+    use bytes::Bytes;
+
+    let mut app = empty_app();
+    let background = |app: &mut App, color: RgbColor| {
+        app.set_host_terminal_theme(TerminalTheme {
+            background: Some(color),
+            ..app.state.host_terminal_theme
+        });
+    };
+    background(
+        &mut app,
+        RgbColor {
+            r: 17,
+            g: 17,
+            b: 17,
+        },
+    );
+    app.set_host_terminal_appearance_state(Some(HostAppearance::Dark), true);
+    app.set_host_terminal_appearance_state(Some(HostAppearance::Light), true);
+
+    let spawned = app
+        .spawn_passthrough_agent(spawn_request("/bin/cat", None))
+        .unwrap();
+    let query = |app: &App, request: &[u8]| {
+        app.terminal_runtimes
+            .get(&spawned.terminal_id)
+            .unwrap()
+            .test_process_pty_bytes(request)
+    };
+
+    assert_eq!(
+        query(&app, b"\x1b[?996n"),
+        [Bytes::from_static(b"\x1b[?997;1n")]
+    );
+    assert_eq!(
+        query(&app, b"\x1b]11;?\x07"),
+        [Bytes::from_static(b"\x1b]11;rgb:1111/1111/1111\x1b\\")]
+    );
+    background(
+        &mut app,
+        RgbColor {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
+    );
+    assert_eq!(
+        query(&app, b"\x1b[?996n"),
+        [Bytes::from_static(b"\x1b[?997;2n")]
+    );
+    assert_eq!(
+        query(&app, b"\x1b]11;?\x07"),
+        [Bytes::from_static(b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\")]
+    );
+    app.close_passthrough_terminal(&spawned.terminal_id);
+}
