@@ -102,6 +102,14 @@ pub(super) fn get_supervisor_argv(agents: &[String], options: &ClusterOptions) -
         "--idle-exit".into(),
         format_duration(options.idle_exit),
     ]);
+    if options.yolo {
+        // `--yolo-timeout` accepts a bare `0`, not `0s`.
+        let yolo_timeout = match options.yolo_timeout {
+            Duration::ZERO => "0".into(),
+            duration => format_duration(duration),
+        };
+        argv.extend(["--yolo".into(), "--yolo-timeout".into(), yolo_timeout]);
+    }
     argv.extend_from_slice(agents);
     argv
 }
@@ -162,11 +170,7 @@ pub(super) fn supervise(
     let spawned = spawn_all(
         agents.len(),
         |index| {
-            let ready_file = ready_dir
-                .join(format!("{index}.ready"))
-                .display()
-                .to_string();
-            let argv = super::get_tab_argv(exe, group, Some(&ready_file), &agents[index]);
+            let argv = get_member_argv(exe, group, &ready_dir, index, &agents[index], options);
             spawn_member(&argv, cwd).map_err(|err| format!("cannot start {}: {err}", agents[index]))
         },
         |mut started| stop_members(&mut started, Duration::ZERO),
@@ -180,7 +184,12 @@ pub(super) fn supervise(
         }
     };
     tracing::info!(group, agents = agents.len(), "background cluster started");
-    spawn_prompt_when_ready(ready_dir.join("0.ready"), prompt.clone());
+    spawn_leader_work_when_ready(
+        ready_dir.join("0.ready"),
+        prompt.clone(),
+        options.yolo.then_some(options.yolo_timeout),
+        is_stopped.clone(),
+    );
     let config = WatchConfig {
         ready_dir: ready_dir.clone(),
         leader_pane: None,
@@ -225,6 +234,28 @@ pub(super) fn supervise(
         EndReason::Stopped => STOPPED_EXIT_CODE,
         _ => 0,
     }
+}
+
+/// The `switch` argv of agent `index`; with `--yolo`, only the first agent gets `--cluster-yolo`.
+pub(super) fn get_member_argv(
+    exe: &str,
+    group: u32,
+    ready_dir: &Path,
+    index: usize,
+    agent: &str,
+    options: &ClusterOptions,
+) -> Vec<String> {
+    let ready_file = ready_dir
+        .join(format!("{index}.ready"))
+        .display()
+        .to_string();
+    super::get_tab_argv(
+        exe,
+        group,
+        Some(&ready_file),
+        options.yolo && index == 0,
+        agent,
+    )
 }
 
 /// Starts all `count` members or none: after a failure, `stop` gets the started ones.
@@ -281,13 +312,23 @@ fn spawn_member(argv: &[String], cwd: &Path) -> Result<PtyMember, String> {
     Ok(member)
 }
 
-/// Submits the prompt to the first agent once its ready file names its pane.
-fn spawn_prompt_when_ready(ready_file: PathBuf, prompt: String) {
+/// Submits the prompt to the first agent once its ready file names its pane, and
+/// with `--yolo` starts watching it for dialogs.
+fn spawn_leader_work_when_ready(
+    ready_file: PathBuf,
+    prompt: String,
+    yolo: Option<Duration>,
+    stop: Arc<AtomicBool>,
+) {
     if let Err(err) = crate::thread_spawn::spawn_named("herdr-cluster-ready", move || {
         let deadline = Instant::now() + READY_WAIT;
         while Instant::now() < deadline {
             if let Ok(pane_id) = std::fs::read_to_string(&ready_file) {
-                super::spawn_prompt(pane_id.trim().to_owned(), prompt);
+                let pane_id = pane_id.trim().to_owned();
+                if let Some(grace) = yolo {
+                    super::cluster_yolo::spawn_watch(pane_id.clone(), grace, stop);
+                }
+                super::spawn_prompt(pane_id, prompt);
                 return;
             }
             std::thread::sleep(Duration::from_millis(250));

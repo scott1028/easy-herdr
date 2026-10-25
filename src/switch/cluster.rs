@@ -16,9 +16,20 @@ use cluster_watch::{EndReason, Outcome, WatchConfig};
 mod cluster_background;
 #[path = "cluster_log.rs"]
 mod cluster_log;
+#[path = "cluster_yolo.rs"]
+mod cluster_yolo;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 const DEFAULT_IDLE_EXIT: Duration = Duration::from_secs(5 * 60);
+const DEFAULT_YOLO_TIMEOUT: Duration = Duration::from_secs(60);
+/// `--yolo` flags for the claude family; the `--settings` JSON stays one argument.
+const CLAUDE_YOLO_ARGS: [&str; 4] = [
+    "--permission-mode",
+    "bypassPermissions",
+    "--settings",
+    r#"{"askUserQuestionTimeout":"60s","skipDangerousModePermissionPrompt":true}"#,
+];
+const CODEX_YOLO_ARGS: [&str; 2] = ["--ask-for-approval", "never"];
 /// `--help` box for the options before the first agent.
 const OPTIONS_HELP: &str = "\
 +-- Auto exit and background (OPTIONS go before <AGENT_CLI>) ----------------+
@@ -37,6 +48,25 @@ const OPTIONS_HELP: &str = "\
 | --timeout -1 means the cluster never times out.                            |
 | --timeout and --idle-exit need --exit-when-done or --background.           |
 | Without these options, cluster behaves as before.                          |
++----------------------------------------------------------------------------+";
+/// `--help` box for `--yolo`, shown after `OPTIONS_HELP`.
+const YOLO_HELP: &str = "\
++-- Unattended answers (OPTIONS go before <AGENT_CLI>) ----------------------+
+| --yolo             Let the first agent run without approval stops.         |
+|                    claude*: bypassPermissions, and questions continue on   |
+|                    their own after 60s (askUserQuestionTimeout).           |
+|                    codex*: --ask-for-approval never; sandbox unchanged.    |
+|                    Other agents get no extra flags.                        |
+|                    claude* means claude, or a name that starts with        |
+|                    claude- or claude_; codex* works the same way.          |
+|                    A known dialog still open after --yolo-timeout gets     |
+|                    its default key. Unknown dialogs are only logged.       |
+| --yolo-timeout <D> Wait this long before answering. Default: 60s.          |
+|                    0 answers at once. Needs --yolo.                        |
+|                                                                            |
+| Only the first agent gets --yolo. Agents may run commands without asking:  |
+| use a sandbox or a separate checkout.                                      |
+| Claude's folder-trust dialog is not answered; use a folder Claude trusts.  |
 +----------------------------------------------------------------------------+";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -63,6 +93,10 @@ struct ClusterOptions {
     /// `None` when `--timeout -1` removed the deadline.
     timeout: Option<Duration>,
     idle_exit: Duration,
+    /// Set by `--yolo`: the first agent runs without approval stops.
+    yolo: bool,
+    /// How long a blocked first agent waits before it is answered; zero answers at once.
+    yolo_timeout: Duration,
 }
 
 impl Default for ClusterOptions {
@@ -72,6 +106,8 @@ impl Default for ClusterOptions {
             background: false,
             timeout: Some(DEFAULT_TIMEOUT),
             idle_exit: DEFAULT_IDLE_EXIT,
+            yolo: false,
+            yolo_timeout: DEFAULT_YOLO_TIMEOUT,
         }
     }
 }
@@ -157,6 +193,8 @@ fn parse_cluster_options(args: &[String]) -> Result<(ClusterOptions, &[String]),
     let mut background = false;
     let mut timeout: Option<Option<Duration>> = None;
     let mut idle_exit: Option<Duration> = None;
+    let mut yolo = false;
+    let mut yolo_timeout: Option<Duration> = None;
     let mut index = 0;
     while let Some(flag) = args
         .get(index)
@@ -165,15 +203,16 @@ fn parse_cluster_options(args: &[String]) -> Result<(ClusterOptions, &[String]),
         let is_repeated = match flag.as_str() {
             "--exit-when-done" => std::mem::replace(&mut exit_when_done, true),
             "--background" => std::mem::replace(&mut background, true),
-            "--timeout" | "--idle-exit" => {
+            "--yolo" => std::mem::replace(&mut yolo, true),
+            "--timeout" | "--idle-exit" | "--yolo-timeout" => {
                 index += 1;
                 let text = args
                     .get(index)
                     .ok_or_else(|| format!("missing <DURATION> after {flag}"))?;
-                if flag == "--timeout" {
-                    timeout.replace(parse_timeout(text)?).is_some()
-                } else {
-                    idle_exit.replace(parse_duration(text)?).is_some()
+                match flag.as_str() {
+                    "--timeout" => timeout.replace(parse_timeout(text)?).is_some(),
+                    "--idle-exit" => idle_exit.replace(parse_duration(text)?).is_some(),
+                    _ => yolo_timeout.replace(parse_yolo_timeout(text)?).is_some(),
                 }
             }
             _ => return Err(format!("unknown option: {flag}")),
@@ -191,11 +230,16 @@ fn parse_cluster_options(args: &[String]) -> Result<(ClusterOptions, &[String]),
             return Err(format!("{flag} requires --exit-when-done or --background"));
         }
     }
+    if yolo_timeout.is_some() && !yolo {
+        return Err("--yolo-timeout requires --yolo".into());
+    }
     let options = ClusterOptions {
         exit_when_done: exit_when_done || background,
         background,
         timeout: timeout.unwrap_or(Some(DEFAULT_TIMEOUT)),
         idle_exit: idle_exit.unwrap_or(DEFAULT_IDLE_EXIT),
+        yolo,
+        yolo_timeout: yolo_timeout.unwrap_or(DEFAULT_YOLO_TIMEOUT),
     };
     Ok((options, &args[index..]))
 }
@@ -209,6 +253,14 @@ fn parse_timeout(text: &str) -> Result<Option<Duration>, String> {
         Ok(duration) => Ok(Some(duration)),
         Err(_) => Err(format!("invalid duration: {text} (use 30s, 90m, 2h or -1)")),
     }
+}
+
+/// Parses `--yolo-timeout`: a duration, or `0` to answer at once.
+fn parse_yolo_timeout(text: &str) -> Result<Duration, String> {
+    if text == "0" {
+        return Ok(Duration::ZERO);
+    }
+    parse_duration(text).map_err(|_| format!("invalid duration: {text} (use 0, 30s, 90m or 2h)"))
 }
 
 /// Parses `<positive integer><s|m|h>`, for example `30s`, `90m` or `2h`.
@@ -291,7 +343,7 @@ pub(super) fn run(args: &[String]) -> i32 {
             .as_ref()
             .map(|dir| dir.join(format!("{index}.ready")).display().to_string());
         let spec = crate::platform::TerminalWindowSpec {
-            argv: get_tab_argv(&exe, group, ready_file.as_deref(), agent),
+            argv: get_tab_argv(&exe, group, ready_file.as_deref(), false, agent),
             cwd: cwd.clone(),
         };
         if let Err(err) = crate::platform::open_terminal_tab(&spec) {
@@ -302,6 +354,7 @@ pub(super) fn run(args: &[String]) -> i32 {
     let leader = LeaderConfig {
         group,
         prompt,
+        yolo: options.yolo.then_some(options.yolo_timeout),
         watch: ready_dir.clone().map(|ready_dir| {
             let config = WatchConfig {
                 ready_dir,
@@ -314,7 +367,7 @@ pub(super) fn run(args: &[String]) -> i32 {
         }),
     };
     let code = super::launch(
-        vec![agents[0].clone()],
+        get_leader_argv(&agents[0], &options),
         None,
         Some(super::ClusterLaunch::Leader(leader)),
     )
@@ -361,8 +414,14 @@ fn create_ready_dir(dir: &Path) -> Result<(), String> {
 }
 
 /// A cluster tab runs `switch` tagged with the leader's group, plus its ready file
-/// with `--exit-when-done`.
-fn get_tab_argv(exe: &str, group: u32, ready_file: Option<&str>, agent: &str) -> Vec<String> {
+/// with `--exit-when-done`, and `--cluster-yolo` for a background `--yolo` leader.
+fn get_tab_argv(
+    exe: &str,
+    group: u32,
+    ready_file: Option<&str>,
+    is_yolo: bool,
+    agent: &str,
+) -> Vec<String> {
     let mut argv = vec![
         exe.into(),
         "switch".into(),
@@ -372,8 +431,38 @@ fn get_tab_argv(exe: &str, group: u32, ready_file: Option<&str>, agent: &str) ->
     if let Some(ready_file) = ready_file {
         argv.extend(["--cluster-ready".into(), ready_file.into()]);
     }
+    if is_yolo {
+        argv.push("--cluster-yolo".into());
+    }
     argv.push(agent.into());
     argv
+}
+
+/// The first agent's argv in this terminal; `--yolo` adds its family's flags.
+fn get_leader_argv(agent: &str, options: &ClusterOptions) -> Vec<String> {
+    let mut argv = vec![agent.to_owned()];
+    if options.yolo {
+        argv.extend(get_yolo_args(agent));
+    }
+    argv
+}
+
+/// The flags `--yolo` adds for the agent's CLI family, none for other agents.
+/// A family is its base name, or any name that starts with the base name and `-` or `_`.
+pub(super) fn get_yolo_args(program: &str) -> Vec<String> {
+    let get_is_family = |base: &str| {
+        program
+            .strip_prefix(base)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(['-', '_']))
+    };
+    let args: &[&str] = if get_is_family("claude") {
+        &CLAUDE_YOLO_ARGS
+    } else if get_is_family("codex") {
+        &CODEX_YOLO_ARGS
+    } else {
+        &[]
+    };
+    args.iter().map(|arg| (*arg).to_owned()).collect()
 }
 
 /// The final stdout line and exit code for a supervisor outcome.
@@ -413,6 +502,8 @@ type StartedCallback = Box<dyn FnOnce(&PassthroughStarted)>;
 pub(super) struct LeaderConfig {
     pub(super) group: u32,
     prompt: Option<String>,
+    /// Set with `--yolo`: how long a blocked leader waits before it is answered.
+    yolo: Option<Duration>,
     /// Set with `--exit-when-done`: the supervisor stores its outcome in the slot.
     watch: Option<(WatchConfig, OutcomeSlot)>,
 }
@@ -424,13 +515,21 @@ pub(super) fn get_started_callback(
 ) -> Option<StartedCallback> {
     let stop = stop.clone();
     match cluster.clone() {
-        super::ClusterLaunch::Leader(LeaderConfig { prompt, watch, .. }) => {
-            if prompt.is_none() && watch.is_none() {
+        super::ClusterLaunch::Leader(LeaderConfig {
+            prompt,
+            yolo,
+            watch,
+            ..
+        }) => {
+            if prompt.is_none() && yolo.is_none() && watch.is_none() {
                 return None;
             }
             Some(Box::new(move |started: &PassthroughStarted| {
                 if let Some(prompt) = prompt {
                     spawn_prompt(started.pane_id.clone(), prompt);
+                }
+                if let Some(grace) = yolo {
+                    cluster_yolo::spawn_watch(started.pane_id.clone(), grace, stop.clone());
                 }
                 if let Some((config, outcome)) = watch {
                     let config = WatchConfig {
@@ -518,6 +617,8 @@ fn print_help() {
     println!();
     println!("{OPTIONS_HELP}");
     println!();
+    println!("{YOLO_HELP}");
+    println!();
     println!("Examples:");
     println!(r#"  easy-herdr cluster claude codex -- "fix the bug""#);
     println!(r#"  easy-herdr cluster --exit-when-done --timeout 3h claude codex -- "fix the bug""#);
@@ -525,6 +626,10 @@ fn print_help() {
         r#"  easy-herdr cluster --background --timeout 4h --idle-exit 10m claude codex -- "fix the bug""#
     );
     println!(r#"  easy-herdr cluster --exit-when-done --timeout -1 claude codex -- "fix the bug""#);
+    println!(r#"  easy-herdr cluster --yolo claude-personal codex -- "fix the bug""#);
+    println!(
+        r#"  easy-herdr cluster --background --timeout 4h --yolo --yolo-timeout 30s claude codex -- "fix the bug""#
+    );
 }
 
 fn spawn_prompt(pane_id: String, prompt: String) {

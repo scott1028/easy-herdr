@@ -62,3 +62,50 @@ fn cluster_help_boxes_auto_exit_and_background_options_with_examples() {
     }
     assert!(!help.contains("--supervise"));
 }
+
+#[test]
+fn cluster_help_boxes_yolo_options_after_the_auto_exit_box() {
+    let output = Command::new(env!("CARGO_BIN_EXE_easy-herdr"))
+        .args(["cluster", "--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let help = String::from_utf8(output.stdout).unwrap();
+    let lines = help.lines().collect::<Vec<_>>();
+    let find = |text: &str| {
+        lines
+            .iter()
+            .position(|line| line.contains(text))
+            .unwrap_or_else(|| panic!("missing {text}: {help}"))
+    };
+    let options_box = find("+-- Auto exit and background");
+    let yolo_box = find("+-- Unattended answers (OPTIONS go before <AGENT_CLI>) ");
+    let examples = find("Examples:");
+    assert!(options_box < yolo_box && yolo_box < examples, "{help}");
+    // The yolo box follows the auto exit box after one blank line.
+    assert!(lines[yolo_box - 1].is_empty(), "{help}");
+    assert!(lines[yolo_box - 2].starts_with("+---"), "{help}");
+    assert!(!lines[options_box..yolo_box]
+        .iter()
+        .any(|line| line.contains("--yolo")));
+    for example in [
+        r#"  easy-herdr cluster --yolo claude-personal codex -- "fix the bug""#,
+        r#"  easy-herdr cluster --background --timeout 4h --yolo --yolo-timeout 30s claude codex -- "fix the bug""#,
+    ] {
+        assert!(find(example) > examples, "{help}");
+    }
+    assert!(!help.contains("--cluster-yolo"));
+    // The hidden switch flag stays out of every help text.
+    for args in [&["--help"][..], &["switch", "--help"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_easy-herdr"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}");
+        let help = [output.stdout, output.stderr].concat();
+        assert!(
+            !String::from_utf8(help).unwrap().contains("--cluster-yolo"),
+            "{args:?}"
+        );
+    }
+}

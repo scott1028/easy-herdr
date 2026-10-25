@@ -4,6 +4,14 @@ fn strings(args: &[&str]) -> Vec<String> {
     args.iter().map(|arg| (*arg).to_owned()).collect()
 }
 
+const CLAUDE_YOLO_FLAGS: [&str; 4] = [
+    "--permission-mode",
+    "bypassPermissions",
+    "--settings",
+    r#"{"askUserQuestionTimeout":"60s","skipDangerousModePermissionPrompt":true}"#,
+];
+const CODEX_YOLO_FLAGS: [&str; 2] = ["--ask-for-approval", "never"];
+
 #[test]
 fn cluster_parses_multiple_agents_without_shells() {
     assert_eq!(
@@ -143,6 +151,7 @@ fn cluster_accepts_auto_exit_options_before_the_first_agent() {
                     background,
                     timeout: Some(Duration::from_secs(timeout)),
                     idle_exit: Duration::from_secs(idle_exit),
+                    ..ClusterOptions::default()
                 },
             }),
             "{args:?}"
@@ -307,6 +316,7 @@ fn cluster_timeout_accepts_minus_one_as_no_deadline() {
                 background: false,
                 timeout: None,
                 idle_exit: DEFAULT_IDLE_EXIT,
+                ..ClusterOptions::default()
             },
         }),
         "{args:?}"
@@ -372,17 +382,19 @@ fn cluster_durations_format_with_the_largest_exact_unit() {
 
 #[test]
 fn cluster_options_help_box_lines_share_one_width_within_80_columns() {
-    let lines = OPTIONS_HELP.lines().collect::<Vec<_>>();
-    let width = lines[0].chars().count();
-    assert!(lines.len() > 2 && width <= 80, "{lines:?}");
-    for (index, line) in lines.iter().enumerate() {
-        assert_eq!(line.chars().count(), width, "{line:?}");
-        let edge = if index == 0 || index + 1 == lines.len() {
-            '+'
-        } else {
-            '|'
-        };
-        assert!(line.starts_with(edge) && line.ends_with(edge), "{line:?}");
+    let width = OPTIONS_HELP.lines().next().unwrap().chars().count();
+    for help in [OPTIONS_HELP, YOLO_HELP] {
+        let lines = help.lines().collect::<Vec<_>>();
+        assert!(lines.len() > 2 && width <= 80, "{lines:?}");
+        for (index, line) in lines.iter().enumerate() {
+            assert_eq!(line.chars().count(), width, "{line:?}");
+            let edge = if index == 0 || index + 1 == lines.len() {
+                '+'
+            } else {
+                '|'
+            };
+            assert!(line.starts_with(edge) && line.ends_with(edge), "{line:?}");
+        }
     }
     for flag in [
         "--exit-when-done",
@@ -392,6 +404,115 @@ fn cluster_options_help_box_lines_share_one_width_within_80_columns() {
         "--background",
     ] {
         assert!(OPTIONS_HELP.contains(flag), "missing {flag}");
+    }
+    for phrase in [
+        "--yolo ",
+        "--yolo-timeout <D>",
+        "Default: 60s",
+        "bypassPermissions",
+        "askUserQuestionTimeout",
+        "--ask-for-approval never",
+        "Only the first agent gets --yolo",
+        "folder-trust dialog is not answered",
+    ] {
+        assert!(YOLO_HELP.contains(phrase), "missing {phrase}");
+    }
+    assert!(!OPTIONS_HELP.contains("--yolo"));
+    assert!(!YOLO_HELP.contains("--cluster-yolo"));
+}
+
+#[test]
+fn cluster_yolo_is_off_by_default_and_parses_its_timeout() {
+    let agents = strings(&["claude-personal", "codex-personal"]);
+    let is_available = |agent: &str| matches!(agent, "claude-personal" | "codex-personal");
+    for (flags, yolo, yolo_timeout) in [
+        (vec![], false, 60),
+        (vec!["--exit-when-done"], false, 60),
+        (vec!["--yolo"], true, 60),
+        (vec!["--yolo", "--yolo-timeout", "30s"], true, 30),
+        (vec!["--yolo-timeout", "5m", "--yolo"], true, 300),
+        (vec!["--yolo", "--yolo-timeout", "2h"], true, 7200),
+        (vec!["--yolo", "--yolo-timeout", "0"], true, 0),
+        (vec!["--background", "--yolo", "--timeout", "4h"], true, 60),
+    ] {
+        let args = strings(
+            &[
+                flags.as_slice(),
+                &["claude-personal", "codex-personal", "--", "fix"],
+            ]
+            .concat(),
+        );
+        let Ok(ClusterCommand::Launch {
+            agents: parsed_agents,
+            prompt,
+            options,
+        }) = parse_cluster_args(&args, is_available)
+        else {
+            panic!("{args:?} must launch");
+        };
+        assert_eq!(parsed_agents, agents, "{args:?}");
+        assert_eq!(prompt.as_deref(), Some("fix"), "{args:?}");
+        assert_eq!(options.yolo, yolo, "{args:?}");
+        assert_eq!(
+            options.yolo_timeout,
+            Duration::from_secs(yolo_timeout),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn cluster_rejects_invalid_yolo_options_with_exit_two() {
+    for (args, error) in [
+        (
+            vec!["--yolo-timeout", "5s", "claude", "--", "hi"],
+            "--yolo-timeout requires --yolo",
+        ),
+        (
+            vec!["--exit-when-done", "--yolo-timeout", "0", "claude"],
+            "--yolo-timeout requires --yolo",
+        ),
+        (vec!["--yolo", "--yolo", "claude"], "--yolo given twice"),
+        (
+            vec!["--yolo", "--yolo", "5s", "claude"],
+            "--yolo given twice",
+        ),
+        (
+            vec![
+                "--yolo",
+                "--yolo-timeout",
+                "1m",
+                "--yolo-timeout",
+                "2m",
+                "claude",
+            ],
+            "--yolo-timeout given twice",
+        ),
+        (
+            vec!["--yolo", "--yolo-timeout"],
+            "missing <DURATION> after --yolo-timeout",
+        ),
+        (vec!["claude", "--yolo"], "unknown option: --yolo"),
+        (
+            vec!["--yolo", "claude", "--yolo-timeout", "5s"],
+            "unknown option: --yolo-timeout",
+        ),
+    ] {
+        let args = strings(&args);
+        assert_eq!(
+            parse_cluster_args(&args, |agent| agent == "claude"),
+            Err(error.into()),
+            "{args:?}"
+        );
+        assert_eq!(run(&args), 2, "{args:?}");
+    }
+    for text in ["0s", "0m", "00", "-0", "-1", "5", "1.5m", "", " 0"] {
+        let args = strings(&["--yolo", "--yolo-timeout", text, "claude"]);
+        assert_eq!(
+            parse_cluster_args(&args, |agent| agent == "claude"),
+            Err(format!("invalid duration: {text} (use 0, 30s, 90m or 2h)")),
+            "{args:?}"
+        );
     }
 }
 
@@ -536,7 +657,7 @@ fn cluster_tabs_run_switch_with_the_leader_group() {
             ]),
         ),
     ] {
-        let argv = get_tab_argv("/bin/easy-herdr", 12345, ready_file, "codex");
+        let argv = get_tab_argv("/bin/easy-herdr", 12345, ready_file, false, "codex");
         assert_eq!(argv, expected);
         assert_eq!(
             crate::switch::parse_switch_args(&argv[2..]),
@@ -549,6 +670,149 @@ fn cluster_tabs_run_switch_with_the_leader_group() {
                 }),
             })
         );
+    }
+}
+
+#[test]
+fn cluster_yolo_adds_family_flags_to_the_foreground_leader_only_when_on() {
+    let claude: &[&str] = &CLAUDE_YOLO_FLAGS;
+    let codex: &[&str] = &CODEX_YOLO_FLAGS;
+    let none: &[&str] = &[];
+    let on = ClusterOptions {
+        yolo: true,
+        ..ClusterOptions::default()
+    };
+    let off = ClusterOptions::default();
+    for (agent, flags) in [
+        ("claude", claude),
+        ("claude-personal", claude),
+        ("claude_x", claude),
+        ("claude-", claude),
+        ("codex", codex),
+        ("codex-personal", codex),
+        ("codex_x", codex),
+        ("opencode", none),
+        ("kimi", none),
+        ("claudette", none),
+        ("xclaude", none),
+        ("codexx", none),
+        ("Claude", none),
+        ("claude.x", none),
+    ] {
+        assert_eq!(get_yolo_args(agent), strings(flags), "{agent}");
+        assert_eq!(
+            get_leader_argv(agent, &on),
+            strings(&[&[agent][..], flags].concat()),
+            "{agent}"
+        );
+        assert_eq!(get_leader_argv(agent, &off), strings(&[agent]), "{agent}");
+    }
+    let settings: serde_json::Value = serde_json::from_str(CLAUDE_YOLO_FLAGS[3]).unwrap();
+    assert_eq!(
+        settings,
+        serde_json::json!({"askUserQuestionTimeout": "60s", "skipDangerousModePermissionPrompt": true})
+    );
+}
+
+#[test]
+fn cluster_background_passes_cluster_yolo_to_the_first_agent_only() {
+    let claude_leader = [&["claude-personal"][..], &CLAUDE_YOLO_FLAGS].concat();
+    let codex_leader = [&["codex-personal"][..], &CODEX_YOLO_FLAGS].concat();
+    for (agents, yolo, launched) in [
+        (
+            ["claude-personal", "codex-personal", "claude"],
+            false,
+            [
+                vec!["claude-personal"],
+                vec!["codex-personal"],
+                vec!["claude"],
+            ],
+        ),
+        (
+            ["claude-personal", "codex-personal", "claude"],
+            true,
+            [claude_leader, vec!["codex-personal"], vec!["claude"]],
+        ),
+        (
+            ["codex-personal", "claude-personal", "codex"],
+            false,
+            [
+                vec!["codex-personal"],
+                vec!["claude-personal"],
+                vec!["codex"],
+            ],
+        ),
+        (
+            ["codex-personal", "claude-personal", "codex"],
+            true,
+            [codex_leader, vec!["claude-personal"], vec!["codex"]],
+        ),
+        (
+            ["opencode", "claude", "codex"],
+            true,
+            [vec!["opencode"], vec!["claude"], vec!["codex"]],
+        ),
+    ] {
+        let options = ClusterOptions {
+            exit_when_done: true,
+            background: true,
+            yolo,
+            ..ClusterOptions::default()
+        };
+        for (index, agent) in agents.into_iter().enumerate() {
+            let argv = cluster_background::get_member_argv(
+                "/bin/easy-herdr",
+                12345,
+                std::path::Path::new("/d/cluster-12345"),
+                index,
+                agent,
+                &options,
+            );
+            let ready_file = format!("/d/cluster-12345/{index}.ready");
+            let mut expected = vec![
+                "/bin/easy-herdr",
+                "switch",
+                "--cluster-group",
+                "12345",
+                "--cluster-ready",
+                &ready_file,
+            ];
+            if yolo && index == 0 {
+                expected.push("--cluster-yolo");
+            }
+            expected.push(agent);
+            assert_eq!(argv, strings(&expected), "{agents:?} yolo={yolo}");
+            assert_eq!(
+                crate::switch::parse_switch_args(&argv[2..]),
+                Ok(crate::switch::SwitchCommand::Launch {
+                    argv: strings(&launched[index]),
+                    agent_name: None,
+                    member: Some(crate::switch::ClusterMember {
+                        group: 12345,
+                        ready_file: Some(std::path::PathBuf::from(&ready_file)),
+                    }),
+                }),
+                "{agents:?} yolo={yolo} index={index}"
+            );
+        }
+    }
+}
+
+#[test]
+fn cluster_leader_starts_the_yolo_watch_only_with_yolo() {
+    let stop = Arc::new(AtomicBool::new(false));
+    let leader = |yolo| {
+        super::super::ClusterLaunch::Leader(LeaderConfig {
+            group: 12345,
+            prompt: None,
+            yolo,
+            watch: None,
+        })
+    };
+    // Without a prompt, a supervisor or --yolo, the leader starts nothing.
+    assert!(get_started_callback(&leader(None), &stop).is_none());
+    for grace in [Duration::ZERO, DEFAULT_YOLO_TIMEOUT] {
+        assert!(get_started_callback(&leader(Some(grace)), &stop).is_some());
     }
 }
 
@@ -608,6 +872,7 @@ fn cluster_supervisor_gets_the_options_and_agents_but_not_the_prompt_in_argv() {
         background: true,
         timeout: Some(Duration::from_secs(4 * 60 * 60)),
         idle_exit: DEFAULT_IDLE_EXIT,
+        ..ClusterOptions::default()
     };
     let agents = strings(&["claude", "codex"]);
     let argv = cluster_background::get_supervisor_argv(&agents, &options);
@@ -637,6 +902,7 @@ fn cluster_supervisor_gets_the_options_and_agents_but_not_the_prompt_in_argv() {
         background: true,
         timeout: None,
         idle_exit: DEFAULT_IDLE_EXIT,
+        ..ClusterOptions::default()
     };
     let argv = cluster_background::get_supervisor_argv(&agents, &never);
     assert_eq!(
@@ -681,6 +947,51 @@ fn cluster_supervisor_gets_the_options_and_agents_but_not_the_prompt_in_argv() {
         );
     }
     assert!(!OPTIONS_HELP.contains("--supervise"));
+}
+
+#[test]
+fn cluster_supervisor_argv_passes_yolo_only_when_on() {
+    let agents = strings(&["claude-personal", "codex-personal"]);
+    for (yolo, yolo_timeout, flags) in [
+        (false, 60, vec![]),
+        (true, 60, vec!["--yolo", "--yolo-timeout", "1m"]),
+        (true, 30, vec!["--yolo", "--yolo-timeout", "30s"]),
+        (true, 0, vec!["--yolo", "--yolo-timeout", "0"]),
+    ] {
+        let options = ClusterOptions {
+            exit_when_done: true,
+            background: true,
+            yolo,
+            yolo_timeout: Duration::from_secs(yolo_timeout),
+            ..ClusterOptions::default()
+        };
+        let argv = cluster_background::get_supervisor_argv(&agents, &options);
+        let expected = [
+            &[
+                "cluster",
+                "--supervise",
+                "--background",
+                "--timeout",
+                "2h",
+                "--idle-exit",
+                "5m",
+            ][..],
+            &flags,
+            &["claude-personal", "codex-personal"],
+        ]
+        .concat();
+        assert_eq!(argv, strings(&expected));
+        assert_eq!(
+            parse_cluster_args(&argv[1..], |agent| {
+                matches!(agent, "claude-personal" | "codex-personal")
+            }),
+            Ok(ClusterCommand::Supervise {
+                agents: agents.clone(),
+                options
+            }),
+            "{argv:?}"
+        );
+    }
 }
 
 #[test]

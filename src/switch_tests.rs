@@ -361,6 +361,126 @@ fn parse_switch_args_reads_a_ready_file_only_with_a_cluster_group() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn parse_switch_args_adds_yolo_flags_only_with_cluster_yolo() {
+    let claude = [
+        "--permission-mode",
+        "bypassPermissions",
+        "--settings",
+        r#"{"askUserQuestionTimeout":"60s","skipDangerousModePermissionPrompt":true}"#,
+    ];
+    let codex = ["--ask-for-approval", "never"];
+    for (args, argv, agent_name) in [
+        (
+            vec!["--cluster-group", "7", "claude-personal"],
+            vec!["claude-personal"],
+            None,
+        ),
+        (
+            vec!["--cluster-group", "7", "--cluster-yolo", "claude-personal"],
+            [&["claude-personal"][..], &claude].concat(),
+            None,
+        ),
+        (
+            vec!["--cluster-yolo", "--cluster-group", "7", "claude"],
+            [&["claude"][..], &claude].concat(),
+            None,
+        ),
+        (
+            vec!["--cluster-group", "7", "codex-personal"],
+            vec!["codex-personal"],
+            None,
+        ),
+        (
+            vec![
+                "--cluster-group",
+                "7",
+                "--cluster-ready",
+                "/d/0.ready",
+                "--cluster-yolo",
+                "codex-personal",
+            ],
+            [&["codex-personal"][..], &codex].concat(),
+            None,
+        ),
+        (
+            vec![
+                "--cluster-group",
+                "7",
+                "--cluster-yolo",
+                "codex",
+                "reviewer",
+                "--",
+                "--model",
+                "x",
+            ],
+            [&["codex"][..], &codex, &["--model", "x"]].concat(),
+            Some("reviewer".to_owned()),
+        ),
+        (
+            vec!["--cluster-group", "7", "--cluster-yolo", "opencode"],
+            vec!["opencode"],
+            None,
+        ),
+        (
+            vec!["--cluster-group", "7", "--cluster-yolo", "claudette"],
+            vec!["claudette"],
+            None,
+        ),
+    ] {
+        let Ok(SwitchCommand::Launch {
+            argv: parsed_argv,
+            agent_name: parsed_agent_name,
+            member: Some(member),
+        }) = parse_switch_args(&strings(&args))
+        else {
+            panic!("{args:?} must launch a cluster member");
+        };
+        assert_eq!(parsed_argv, strings(&argv), "{args:?}");
+        assert_eq!(parsed_agent_name, agent_name, "{args:?}");
+        assert_eq!(member.group, 7, "{args:?}");
+    }
+}
+
+#[test]
+fn parse_switch_args_rejects_invalid_cluster_yolo() {
+    for (args, error) in [
+        (
+            vec!["--cluster-yolo", "claude"],
+            "--cluster-yolo requires --cluster-group",
+        ),
+        (
+            vec!["--cluster-yolo", "--cluster-ready", "/d/0.ready", "claude"],
+            "--cluster-ready requires --cluster-group",
+        ),
+        (
+            vec![
+                "--cluster-group",
+                "7",
+                "--cluster-yolo",
+                "--cluster-yolo",
+                "claude",
+            ],
+            "--cluster-yolo given twice",
+        ),
+        (
+            vec!["--cluster-group", "7", "--cluster-yolo"],
+            "missing <AGENT_CLI>",
+        ),
+        (
+            vec!["--cluster-group", "7", "claude", "--cluster-yolo"],
+            "pass agent arguments after `--`",
+        ),
+    ] {
+        assert_eq!(
+            parse_switch_args(&strings(&args)),
+            Err(error.to_owned()),
+            "{args:?}"
+        );
+    }
+}
+
 #[test]
 fn session_name_is_stable_per_directory_and_distinct_across_directories() {
     let project_a = switch_session_name(Path::new("/work/project-a"), true);

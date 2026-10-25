@@ -380,11 +380,21 @@ fn parse_switch_args(args: &[String]) -> Result<SwitchCommand, String> {
         _ => {}
     }
     // Hidden: cluster tabs pass the leader's pid, and maybe a ready file, before the agent CLI.
-    let (mut group, mut ready_file, mut args) = (None, None, args);
-    while let Some(flag) = args
-        .first()
-        .filter(|flag| matches!(flag.as_str(), "--cluster-group" | "--cluster-ready"))
-    {
+    // A background `--yolo` cluster also passes `--cluster-yolo` to its first agent.
+    let (mut group, mut ready_file, mut is_yolo, mut args) = (None, None, false, args);
+    while let Some(flag) = args.first().filter(|flag| {
+        matches!(
+            flag.as_str(),
+            "--cluster-group" | "--cluster-ready" | "--cluster-yolo"
+        )
+    }) {
+        if flag == "--cluster-yolo" {
+            if std::mem::replace(&mut is_yolo, true) {
+                return Err(format!("{flag} given twice"));
+            }
+            args = &args[1..];
+            continue;
+        }
         let is_group = flag == "--cluster-group";
         let value = args.get(1).ok_or_else(|| {
             let name = if is_group { "<PID>" } else { "<PATH>" };
@@ -408,6 +418,9 @@ fn parse_switch_args(args: &[String]) -> Result<SwitchCommand, String> {
     if ready_file.is_some() && group.is_none() {
         return Err("--cluster-ready requires --cluster-group".into());
     }
+    if is_yolo && group.is_none() {
+        return Err("--cluster-yolo requires --cluster-group".into());
+    }
     let separator = args.iter().position(|arg| arg == "--");
     let (positionals, extra) = match separator {
         Some(index) => (&args[..index], &args[index + 1..]),
@@ -427,6 +440,10 @@ fn parse_switch_args(args: &[String]) -> Result<SwitchCommand, String> {
         return Err("pass agent arguments after `--`".into());
     }
     let mut argv = vec![program.clone()];
+    #[cfg(unix)]
+    if is_yolo {
+        argv.extend(cluster::get_yolo_args(program));
+    }
     argv.extend_from_slice(extra);
     Ok(SwitchCommand::Launch {
         argv,
