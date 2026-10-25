@@ -56,6 +56,8 @@ const FAKE_TERMINAL: &str = r#"#!/bin/sh
 { for arg in "$@"; do printf '%s|' "$arg"; done; echo; } >> "$FAKE_DIR/tabs"
 "#;
 const CLAUDE_YOLO_ARGS: &str = r#"|--permission-mode|bypassPermissions|--settings|{"askUserQuestionTimeout":"60s","skipDangerousModePermissionPrompt":true}"#;
+/// The claude flags for `--yolo-timeout 2m`, rounded up to Claude's `5m`.
+const CLAUDE_YOLO_5M_ARGS: &str = r#"|--permission-mode|bypassPermissions|--settings|{"askUserQuestionTimeout":"5m","skipDangerousModePermissionPrompt":true}"#;
 const CODEX_YOLO_ARGS: &str = "|--ask-for-approval|never";
 
 /// One isolated cluster run: its own config, runtime, home, PATH and cwd.
@@ -603,16 +605,17 @@ fn background_cluster_allows_a_read_only_cwd_without_a_timeout() {
     assert!(fixture.timeout_logs().is_empty());
 }
 
-/// Runs a background cluster of two family agents, then checks each agent's argv and
-/// that only `--yolo` starts one watch, on the first agent's pane.
-fn check_background_yolo(yolo: bool, agents: [&str; 2], leader_args: &str) {
+/// Runs a background cluster of two family agents, with `--yolo --yolo-timeout <D>` when
+/// given, then checks each agent's argv and that only `--yolo` starts one watch, on the
+/// first agent's pane.
+fn check_background_yolo(yolo_timeout: Option<&str>, agents: [&str; 2], leader_args: &str) {
     let fixture = Fixture::new("stuck");
-    let flags: &[&str] = if yolo {
-        &["--yolo", "--yolo-timeout", "0"]
-    } else {
-        &[]
+    let yolo = yolo_timeout.is_some();
+    let flags = match yolo_timeout {
+        Some(yolo_timeout) => vec!["--yolo", "--yolo-timeout", yolo_timeout],
+        None => Vec::new(),
     };
-    let args = [&["--timeout", "3s"][..], flags, &agents, &["--", "go"]].concat();
+    let args = [&["--timeout", "3s"][..], &flags, &agents, &["--", "go"]].concat();
     let supervisor = launch_background(&fixture, &args);
     let leader = fixture.ready_pane(0);
     fixture.assert_all_gone(&[supervisor]);
@@ -649,17 +652,22 @@ fn check_background_yolo(yolo: bool, agents: [&str; 2], leader_args: &str) {
 
 #[test]
 fn background_yolo_adds_codex_flags_to_the_first_agent_only() {
-    check_background_yolo(true, ["codex-x", "claude-x"], CODEX_YOLO_ARGS);
+    check_background_yolo(Some("0"), ["codex-x", "claude-x"], CODEX_YOLO_ARGS);
 }
 
 #[test]
 fn background_yolo_adds_claude_flags_to_the_first_agent_only() {
-    check_background_yolo(true, ["claude-x", "codex-x"], CLAUDE_YOLO_ARGS);
+    check_background_yolo(Some("0"), ["claude-x", "codex-x"], CLAUDE_YOLO_ARGS);
+}
+
+#[test]
+fn background_yolo_rounds_the_claude_question_timeout_up() {
+    check_background_yolo(Some("2m"), ["claude-x", "codex-x"], CLAUDE_YOLO_5M_ARGS);
 }
 
 #[test]
 fn background_cluster_without_yolo_adds_no_flags_and_no_watch() {
-    check_background_yolo(false, ["claude-x", "codex-x"], "");
+    check_background_yolo(None, ["claude-x", "codex-x"], "");
 }
 
 /// Runs a foreground cluster whose member tab only records its argv, then checks the

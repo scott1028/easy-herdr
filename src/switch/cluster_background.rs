@@ -11,7 +11,7 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 
 use super::cluster_log::{self, LogInfo};
 use super::cluster_watch::{EndReason, WatchConfig};
-use super::{format_duration, ClusterOptions};
+use super::{format_duration, format_yolo_timeout, ClusterOptions};
 use crate::switch::{ensure_server, report_error};
 
 const PTY_SIZE: PtySize = PtySize {
@@ -103,12 +103,11 @@ pub(super) fn get_supervisor_argv(agents: &[String], options: &ClusterOptions) -
         format_duration(options.idle_exit),
     ]);
     if options.yolo {
-        // `--yolo-timeout` accepts a bare `0`, not `0s`.
-        let yolo_timeout = match options.yolo_timeout {
-            Duration::ZERO => "0".into(),
-            duration => format_duration(duration),
-        };
-        argv.extend(["--yolo".into(), "--yolo-timeout".into(), yolo_timeout]);
+        argv.extend([
+            "--yolo".into(),
+            "--yolo-timeout".into(),
+            format_yolo_timeout(options.yolo_timeout),
+        ]);
     }
     argv.extend_from_slice(agents);
     argv
@@ -236,7 +235,8 @@ pub(super) fn supervise(
     }
 }
 
-/// The `switch` argv of agent `index`; with `--yolo`, only the first agent gets `--cluster-yolo`.
+/// The `switch` argv of agent `index`; with `--yolo`, only the first agent gets
+/// `--cluster-yolo <D>`.
 pub(super) fn get_member_argv(
     exe: &str,
     group: u32,
@@ -253,7 +253,7 @@ pub(super) fn get_member_argv(
         exe,
         group,
         Some(&ready_file),
-        options.yolo && index == 0,
+        (options.yolo && index == 0).then_some(options.yolo_timeout),
         agent,
     )
 }

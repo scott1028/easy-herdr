@@ -364,32 +364,55 @@ fn parse_switch_args_reads_a_ready_file_only_with_a_cluster_group() {
 #[cfg(unix)]
 #[test]
 fn parse_switch_args_adds_yolo_flags_only_with_cluster_yolo() {
-    let claude = [
-        "--permission-mode",
-        "bypassPermissions",
-        "--settings",
-        r#"{"askUserQuestionTimeout":"60s","skipDangerousModePermissionPrompt":true}"#,
-    ];
-    let codex = ["--ask-for-approval", "never"];
+    let claude = |question_timeout: &str| {
+        vec![
+            "--permission-mode".to_owned(),
+            "bypassPermissions".to_owned(),
+            "--settings".to_owned(),
+            format!(
+                r#"{{"askUserQuestionTimeout":"{question_timeout}","skipDangerousModePermissionPrompt":true}}"#
+            ),
+        ]
+    };
+    let codex = strings(&["--ask-for-approval", "never"]);
+    let with = |program: &str, flags: &[String], extra: &[&str]| {
+        [&strings(&[program])[..], flags, &strings(extra)].concat()
+    };
     for (args, argv, agent_name) in [
         (
             vec!["--cluster-group", "7", "claude-personal"],
-            vec!["claude-personal"],
+            strings(&["claude-personal"]),
             None,
         ),
         (
-            vec!["--cluster-group", "7", "--cluster-yolo", "claude-personal"],
-            [&["claude-personal"][..], &claude].concat(),
+            vec![
+                "--cluster-group",
+                "7",
+                "--cluster-yolo",
+                "0",
+                "claude-personal",
+            ],
+            with("claude-personal", &claude("60s"), &[]),
             None,
         ),
         (
-            vec!["--cluster-yolo", "--cluster-group", "7", "claude"],
-            [&["claude"][..], &claude].concat(),
+            vec!["--cluster-yolo", "1m", "--cluster-group", "7", "claude"],
+            with("claude", &claude("60s"), &[]),
+            None,
+        ),
+        (
+            vec!["--cluster-group", "7", "--cluster-yolo", "5m", "claude"],
+            with("claude", &claude("5m"), &[]),
+            None,
+        ),
+        (
+            vec!["--cluster-group", "7", "--cluster-yolo", "2h", "claude_x"],
+            with("claude_x", &claude("10m"), &[]),
             None,
         ),
         (
             vec!["--cluster-group", "7", "codex-personal"],
-            vec!["codex-personal"],
+            strings(&["codex-personal"]),
             None,
         ),
         (
@@ -399,9 +422,10 @@ fn parse_switch_args_adds_yolo_flags_only_with_cluster_yolo() {
                 "--cluster-ready",
                 "/d/0.ready",
                 "--cluster-yolo",
+                "5m",
                 "codex-personal",
             ],
-            [&["codex-personal"][..], &codex].concat(),
+            with("codex-personal", &codex, &[]),
             None,
         ),
         (
@@ -409,23 +433,24 @@ fn parse_switch_args_adds_yolo_flags_only_with_cluster_yolo() {
                 "--cluster-group",
                 "7",
                 "--cluster-yolo",
+                "1m",
                 "codex",
                 "reviewer",
                 "--",
                 "--model",
                 "x",
             ],
-            [&["codex"][..], &codex, &["--model", "x"]].concat(),
+            with("codex", &codex, &["--model", "x"]),
             Some("reviewer".to_owned()),
         ),
         (
-            vec!["--cluster-group", "7", "--cluster-yolo", "opencode"],
-            vec!["opencode"],
+            vec!["--cluster-group", "7", "--cluster-yolo", "1m", "opencode"],
+            strings(&["opencode"]),
             None,
         ),
         (
-            vec!["--cluster-group", "7", "--cluster-yolo", "claudette"],
-            vec!["claudette"],
+            vec!["--cluster-group", "7", "--cluster-yolo", "1m", "claudette"],
+            strings(&["claudette"]),
             None,
         ),
     ] {
@@ -437,9 +462,23 @@ fn parse_switch_args_adds_yolo_flags_only_with_cluster_yolo() {
         else {
             panic!("{args:?} must launch a cluster member");
         };
-        assert_eq!(parsed_argv, strings(&argv), "{args:?}");
+        assert_eq!(parsed_argv, argv, "{args:?}");
         assert_eq!(parsed_agent_name, agent_name, "{args:?}");
         assert_eq!(member.group, 7, "{args:?}");
+    }
+    // The duration is read where the flags are added, so only Unix rejects it.
+    for text in ["5", "0s", "-1", "1.5m"] {
+        assert_eq!(
+            parse_switch_args(&strings(&[
+                "--cluster-group",
+                "7",
+                "--cluster-yolo",
+                text,
+                "claude"
+            ])),
+            Err(format!("invalid --cluster-yolo: {text}")),
+            "{text}"
+        );
     }
 }
 
@@ -447,11 +486,17 @@ fn parse_switch_args_adds_yolo_flags_only_with_cluster_yolo() {
 fn parse_switch_args_rejects_invalid_cluster_yolo() {
     for (args, error) in [
         (
-            vec!["--cluster-yolo", "claude"],
+            vec!["--cluster-yolo", "1m", "claude"],
             "--cluster-yolo requires --cluster-group",
         ),
         (
-            vec!["--cluster-yolo", "--cluster-ready", "/d/0.ready", "claude"],
+            vec![
+                "--cluster-yolo",
+                "1m",
+                "--cluster-ready",
+                "/d/0.ready",
+                "claude",
+            ],
             "--cluster-ready requires --cluster-group",
         ),
         (
@@ -459,17 +504,24 @@ fn parse_switch_args_rejects_invalid_cluster_yolo() {
                 "--cluster-group",
                 "7",
                 "--cluster-yolo",
+                "1m",
                 "--cluster-yolo",
+                "5m",
                 "claude",
             ],
             "--cluster-yolo given twice",
         ),
         (
             vec!["--cluster-group", "7", "--cluster-yolo"],
+            "missing <DURATION> after --cluster-yolo",
+        ),
+        // The old form without a value takes the agent as its duration.
+        (
+            vec!["--cluster-group", "7", "--cluster-yolo", "claude"],
             "missing <AGENT_CLI>",
         ),
         (
-            vec!["--cluster-group", "7", "claude", "--cluster-yolo"],
+            vec!["--cluster-group", "7", "claude", "--cluster-yolo", "1m"],
             "pass agent arguments after `--`",
         ),
     ] {

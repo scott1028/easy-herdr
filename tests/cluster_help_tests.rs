@@ -89,7 +89,7 @@ fn cluster_help_boxes_yolo_options_after_the_auto_exit_box() {
         .iter()
         .any(|line| line.contains("--yolo")));
     for example in [
-        r#"  easy-herdr cluster --yolo claude-personal codex -- "fix the bug""#,
+        r#"  easy-herdr cluster --yolo claude codex -- "fix the bug""#,
         r#"  easy-herdr cluster --background --timeout 4h --yolo --yolo-timeout 30s claude codex -- "fix the bug""#,
     ] {
         assert!(find(example) > examples, "{help}");

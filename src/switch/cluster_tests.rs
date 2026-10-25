@@ -411,6 +411,8 @@ fn cluster_options_help_box_lines_share_one_width_within_80_columns() {
         "Default: 60s",
         "bypassPermissions",
         "askUserQuestionTimeout",
+        "rounded up to 60s or",
+        "5m, at most 10m",
         "--ask-for-approval never",
         "Only the first agent gets --yolo",
         "folder-trust dialog is not answered",
@@ -657,7 +659,7 @@ fn cluster_tabs_run_switch_with_the_leader_group() {
             ]),
         ),
     ] {
-        let argv = get_tab_argv("/bin/easy-herdr", 12345, ready_file, false, "codex");
+        let argv = get_tab_argv("/bin/easy-herdr", 12345, ready_file, None, "codex");
         assert_eq!(argv, expected);
         assert_eq!(
             crate::switch::parse_switch_args(&argv[2..]),
@@ -699,7 +701,11 @@ fn cluster_yolo_adds_family_flags_to_the_foreground_leader_only_when_on() {
         ("Claude", none),
         ("claude.x", none),
     ] {
-        assert_eq!(get_yolo_args(agent), strings(flags), "{agent}");
+        assert_eq!(
+            get_yolo_args(agent, DEFAULT_YOLO_TIMEOUT),
+            strings(flags),
+            "{agent}"
+        );
         assert_eq!(
             get_leader_argv(agent, &on),
             strings(&[&[agent][..], flags].concat()),
@@ -715,13 +721,76 @@ fn cluster_yolo_adds_family_flags_to_the_foreground_leader_only_when_on() {
 }
 
 #[test]
+fn cluster_yolo_timeout_rounds_up_to_a_claude_question_timeout() {
+    for (seconds, question_timeout) in [
+        (0, "60s"),
+        (5, "60s"),
+        (60, "60s"),
+        (61, "5m"),
+        (120, "5m"),
+        (300, "5m"),
+        (301, "10m"),
+        (600, "10m"),
+        (660, "10m"),
+        (7200, "10m"),
+    ] {
+        assert_eq!(
+            get_question_timeout(Duration::from_secs(seconds)),
+            question_timeout,
+            "{seconds}s"
+        );
+    }
+    for (seconds, question_timeout) in [(0, "60s"), (60, "60s"), (120, "5m"), (1800, "10m")] {
+        let options = ClusterOptions {
+            yolo: true,
+            yolo_timeout: Duration::from_secs(seconds),
+            ..ClusterOptions::default()
+        };
+        assert_eq!(
+            get_leader_argv("claude-personal", &options),
+            strings(&[
+                "claude-personal",
+                "--permission-mode",
+                "bypassPermissions",
+                "--settings",
+                &format!(
+                    r#"{{"askUserQuestionTimeout":"{question_timeout}","skipDangerousModePermissionPrompt":true}}"#
+                ),
+            ]),
+            "{seconds}s"
+        );
+        assert_eq!(
+            get_leader_argv("codex-personal", &options),
+            strings(&[&["codex-personal"][..], &CODEX_YOLO_FLAGS].concat()),
+            "{seconds}s"
+        );
+        let off = ClusterOptions {
+            yolo: false,
+            ..options
+        };
+        assert_eq!(
+            get_leader_argv("claude-personal", &off),
+            strings(&["claude-personal"])
+        );
+    }
+}
+
+#[test]
 fn cluster_background_passes_cluster_yolo_to_the_first_agent_only() {
     let claude_leader = [&["claude-personal"][..], &CLAUDE_YOLO_FLAGS].concat();
+    let claude_leader_5m = [
+        "claude-personal",
+        "--permission-mode",
+        "bypassPermissions",
+        "--settings",
+        r#"{"askUserQuestionTimeout":"5m","skipDangerousModePermissionPrompt":true}"#,
+    ];
     let codex_leader = [&["codex-personal"][..], &CODEX_YOLO_FLAGS].concat();
+    // `yolo` is the --yolo-timeout in seconds and its --cluster-yolo text.
     for (agents, yolo, launched) in [
         (
             ["claude-personal", "codex-personal", "claude"],
-            false,
+            None,
             [
                 vec!["claude-personal"],
                 vec!["codex-personal"],
@@ -730,12 +799,21 @@ fn cluster_background_passes_cluster_yolo_to_the_first_agent_only() {
         ),
         (
             ["claude-personal", "codex-personal", "claude"],
-            true,
+            Some((60, "1m")),
             [claude_leader, vec!["codex-personal"], vec!["claude"]],
         ),
         (
+            ["claude-personal", "codex-personal", "claude"],
+            Some((120, "2m")),
+            [
+                claude_leader_5m.to_vec(),
+                vec!["codex-personal"],
+                vec!["claude"],
+            ],
+        ),
+        (
             ["codex-personal", "claude-personal", "codex"],
-            false,
+            None,
             [
                 vec!["codex-personal"],
                 vec!["claude-personal"],
@@ -744,19 +822,20 @@ fn cluster_background_passes_cluster_yolo_to_the_first_agent_only() {
         ),
         (
             ["codex-personal", "claude-personal", "codex"],
-            true,
+            Some((0, "0")),
             [codex_leader, vec!["claude-personal"], vec!["codex"]],
         ),
         (
             ["opencode", "claude", "codex"],
-            true,
+            Some((60, "1m")),
             [vec!["opencode"], vec!["claude"], vec!["codex"]],
         ),
     ] {
         let options = ClusterOptions {
             exit_when_done: true,
             background: true,
-            yolo,
+            yolo: yolo.is_some(),
+            yolo_timeout: Duration::from_secs(yolo.map_or(60, |(seconds, _)| seconds)),
             ..ClusterOptions::default()
         };
         for (index, agent) in agents.into_iter().enumerate() {
@@ -777,11 +856,11 @@ fn cluster_background_passes_cluster_yolo_to_the_first_agent_only() {
                 "--cluster-ready",
                 &ready_file,
             ];
-            if yolo && index == 0 {
-                expected.push("--cluster-yolo");
+            if let Some((_, text)) = yolo.filter(|_| index == 0) {
+                expected.extend(["--cluster-yolo", text]);
             }
             expected.push(agent);
-            assert_eq!(argv, strings(&expected), "{agents:?} yolo={yolo}");
+            assert_eq!(argv, strings(&expected), "{agents:?} yolo={yolo:?}");
             assert_eq!(
                 crate::switch::parse_switch_args(&argv[2..]),
                 Ok(crate::switch::SwitchCommand::Launch {
@@ -792,7 +871,7 @@ fn cluster_background_passes_cluster_yolo_to_the_first_agent_only() {
                         ready_file: Some(std::path::PathBuf::from(&ready_file)),
                     }),
                 }),
-                "{agents:?} yolo={yolo} index={index}"
+                "{agents:?} yolo={yolo:?} index={index}"
             );
         }
     }

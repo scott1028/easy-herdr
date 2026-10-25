@@ -380,35 +380,33 @@ fn parse_switch_args(args: &[String]) -> Result<SwitchCommand, String> {
         _ => {}
     }
     // Hidden: cluster tabs pass the leader's pid, and maybe a ready file, before the agent CLI.
-    // A background `--yolo` cluster also passes `--cluster-yolo` to its first agent.
-    let (mut group, mut ready_file, mut is_yolo, mut args) = (None, None, false, args);
+    // A background `--yolo` cluster also passes `--cluster-yolo <D>` to its first agent.
+    let (mut group, mut ready_file, mut yolo_timeout, mut args) = (None, None, None, args);
     while let Some(flag) = args.first().filter(|flag| {
         matches!(
             flag.as_str(),
             "--cluster-group" | "--cluster-ready" | "--cluster-yolo"
         )
     }) {
-        if flag == "--cluster-yolo" {
-            if std::mem::replace(&mut is_yolo, true) {
-                return Err(format!("{flag} given twice"));
-            }
-            args = &args[1..];
-            continue;
-        }
-        let is_group = flag == "--cluster-group";
         let value = args.get(1).ok_or_else(|| {
-            let name = if is_group { "<PID>" } else { "<PATH>" };
+            let name = match flag.as_str() {
+                "--cluster-group" => "<PID>",
+                "--cluster-ready" => "<PATH>",
+                _ => "<DURATION>",
+            };
             format!("missing {name} after {flag}")
         })?;
-        let is_repeated = if is_group {
-            let pid = value
-                .parse::<u32>()
-                .ok()
-                .filter(|pid| *pid > 0 && value.bytes().all(|byte| byte.is_ascii_digit()))
-                .ok_or_else(|| format!("invalid --cluster-group: {value}"))?;
-            group.replace(pid).is_some()
-        } else {
-            ready_file.replace(PathBuf::from(value)).is_some()
+        let is_repeated = match flag.as_str() {
+            "--cluster-group" => {
+                let pid = value
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|pid| *pid > 0 && value.bytes().all(|byte| byte.is_ascii_digit()))
+                    .ok_or_else(|| format!("invalid --cluster-group: {value}"))?;
+                group.replace(pid).is_some()
+            }
+            "--cluster-ready" => ready_file.replace(PathBuf::from(value)).is_some(),
+            _ => yolo_timeout.replace(value).is_some(),
         };
         if is_repeated {
             return Err(format!("{flag} given twice"));
@@ -418,7 +416,7 @@ fn parse_switch_args(args: &[String]) -> Result<SwitchCommand, String> {
     if ready_file.is_some() && group.is_none() {
         return Err("--cluster-ready requires --cluster-group".into());
     }
-    if is_yolo && group.is_none() {
+    if yolo_timeout.is_some() && group.is_none() {
         return Err("--cluster-yolo requires --cluster-group".into());
     }
     let separator = args.iter().position(|arg| arg == "--");
@@ -441,8 +439,10 @@ fn parse_switch_args(args: &[String]) -> Result<SwitchCommand, String> {
     }
     let mut argv = vec![program.clone()];
     #[cfg(unix)]
-    if is_yolo {
-        argv.extend(cluster::get_yolo_args(program));
+    if let Some(text) = yolo_timeout {
+        let yolo_timeout = cluster::parse_yolo_timeout(text)
+            .map_err(|_| format!("invalid --cluster-yolo: {text}"))?;
+        argv.extend(cluster::get_yolo_args(program, yolo_timeout));
     }
     argv.extend_from_slice(extra);
     Ok(SwitchCommand::Launch {

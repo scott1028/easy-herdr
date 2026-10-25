@@ -22,13 +22,8 @@ mod cluster_yolo;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 const DEFAULT_IDLE_EXIT: Duration = Duration::from_secs(5 * 60);
 const DEFAULT_YOLO_TIMEOUT: Duration = Duration::from_secs(60);
-/// `--yolo` flags for the claude family; the `--settings` JSON stays one argument.
-const CLAUDE_YOLO_ARGS: [&str; 4] = [
-    "--permission-mode",
-    "bypassPermissions",
-    "--settings",
-    r#"{"askUserQuestionTimeout":"60s","skipDangerousModePermissionPrompt":true}"#,
-];
+/// `--yolo` flags for the claude family, before its `--settings` JSON.
+const CLAUDE_YOLO_ARGS: [&str; 3] = ["--permission-mode", "bypassPermissions", "--settings"];
 const CODEX_YOLO_ARGS: [&str; 2] = ["--ask-for-approval", "never"];
 /// `--help` box for the options before the first agent.
 const OPTIONS_HELP: &str = "\
@@ -54,7 +49,8 @@ const YOLO_HELP: &str = "\
 +-- Unattended answers (OPTIONS go before <AGENT_CLI>) ----------------------+
 | --yolo             Let the first agent run without approval stops.         |
 |                    claude*: bypassPermissions, and questions continue on   |
-|                    their own after 60s (askUserQuestionTimeout).           |
+|                    their own after --yolo-timeout, rounded up to 60s or    |
+|                    5m, at most 10m (askUserQuestionTimeout).               |
 |                    codex*: --ask-for-approval never; sandbox unchanged.    |
 |                    Other agents get no extra flags.                        |
 |                    claude* means claude, or a name that starts with        |
@@ -256,11 +252,19 @@ fn parse_timeout(text: &str) -> Result<Option<Duration>, String> {
 }
 
 /// Parses `--yolo-timeout`: a duration, or `0` to answer at once.
-fn parse_yolo_timeout(text: &str) -> Result<Duration, String> {
+pub(super) fn parse_yolo_timeout(text: &str) -> Result<Duration, String> {
     if text == "0" {
         return Ok(Duration::ZERO);
     }
     parse_duration(text).map_err(|_| format!("invalid duration: {text} (use 0, 30s, 90m or 2h)"))
+}
+
+/// Formats a `--yolo-timeout` that `parse_yolo_timeout` reads back: zero is `0`, not `0s`.
+fn format_yolo_timeout(yolo_timeout: Duration) -> String {
+    if yolo_timeout.is_zero() {
+        return "0".into();
+    }
+    format_duration(yolo_timeout)
 }
 
 /// Parses `<positive integer><s|m|h>`, for example `30s`, `90m` or `2h`.
@@ -343,7 +347,7 @@ pub(super) fn run(args: &[String]) -> i32 {
             .as_ref()
             .map(|dir| dir.join(format!("{index}.ready")).display().to_string());
         let spec = crate::platform::TerminalWindowSpec {
-            argv: get_tab_argv(&exe, group, ready_file.as_deref(), false, agent),
+            argv: get_tab_argv(&exe, group, ready_file.as_deref(), None, agent),
             cwd: cwd.clone(),
         };
         if let Err(err) = crate::platform::open_terminal_tab(&spec) {
@@ -414,12 +418,12 @@ fn create_ready_dir(dir: &Path) -> Result<(), String> {
 }
 
 /// A cluster tab runs `switch` tagged with the leader's group, plus its ready file
-/// with `--exit-when-done`, and `--cluster-yolo` for a background `--yolo` leader.
+/// with `--exit-when-done`, and `--cluster-yolo <D>` for a background `--yolo` leader.
 fn get_tab_argv(
     exe: &str,
     group: u32,
     ready_file: Option<&str>,
-    is_yolo: bool,
+    yolo_timeout: Option<Duration>,
     agent: &str,
 ) -> Vec<String> {
     let mut argv = vec![
@@ -431,8 +435,8 @@ fn get_tab_argv(
     if let Some(ready_file) = ready_file {
         argv.extend(["--cluster-ready".into(), ready_file.into()]);
     }
-    if is_yolo {
-        argv.push("--cluster-yolo".into());
+    if let Some(yolo_timeout) = yolo_timeout {
+        argv.extend(["--cluster-yolo".into(), format_yolo_timeout(yolo_timeout)]);
     }
     argv.push(agent.into());
     argv
@@ -442,27 +446,44 @@ fn get_tab_argv(
 fn get_leader_argv(agent: &str, options: &ClusterOptions) -> Vec<String> {
     let mut argv = vec![agent.to_owned()];
     if options.yolo {
-        argv.extend(get_yolo_args(agent));
+        argv.extend(get_yolo_args(agent, options.yolo_timeout));
     }
     argv
 }
 
 /// The flags `--yolo` adds for the agent's CLI family, none for other agents.
 /// A family is its base name, or any name that starts with the base name and `-` or `_`.
-pub(super) fn get_yolo_args(program: &str) -> Vec<String> {
+pub(super) fn get_yolo_args(program: &str, yolo_timeout: Duration) -> Vec<String> {
     let get_is_family = |base: &str| {
         program
             .strip_prefix(base)
             .is_some_and(|rest| rest.is_empty() || rest.starts_with(['-', '_']))
     };
-    let args: &[&str] = if get_is_family("claude") {
-        &CLAUDE_YOLO_ARGS
-    } else if get_is_family("codex") {
+    if get_is_family("claude") {
+        let mut args = CLAUDE_YOLO_ARGS.map(String::from).to_vec();
+        // One argv element; the timeout is one of a fixed set, so the JSON stays valid.
+        args.push(format!(
+            r#"{{"askUserQuestionTimeout":"{}","skipDangerousModePermissionPrompt":true}}"#,
+            get_question_timeout(yolo_timeout)
+        ));
+        return args;
+    }
+    let args: &[&str] = if get_is_family("codex") {
         &CODEX_YOLO_ARGS
     } else {
         &[]
     };
     args.iter().map(|arg| (*arg).to_owned()).collect()
+}
+
+/// Claude's `askUserQuestionTimeout` for a `--yolo-timeout`: rounded up to 60s or 5m,
+/// at most 10m. `never` would turn the timeout off, so it is never used.
+fn get_question_timeout(yolo_timeout: Duration) -> &'static str {
+    match yolo_timeout.as_secs() {
+        0..=60 => "60s",
+        61..=300 => "5m",
+        _ => "10m",
+    }
 }
 
 /// The final stdout line and exit code for a supervisor outcome.
@@ -626,7 +647,7 @@ fn print_help() {
         r#"  easy-herdr cluster --background --timeout 4h --idle-exit 10m claude codex -- "fix the bug""#
     );
     println!(r#"  easy-herdr cluster --exit-when-done --timeout -1 claude codex -- "fix the bug""#);
-    println!(r#"  easy-herdr cluster --yolo claude-personal codex -- "fix the bug""#);
+    println!(r#"  easy-herdr cluster --yolo claude codex -- "fix the bug""#);
     println!(
         r#"  easy-herdr cluster --background --timeout 4h --yolo --yolo-timeout 30s claude codex -- "fix the bug""#
     );
