@@ -14,6 +14,8 @@ mod cluster_watch;
 use cluster_watch::{EndReason, Outcome, WatchConfig};
 #[path = "cluster_background.rs"]
 mod cluster_background;
+#[path = "cluster_help.rs"]
+mod cluster_help;
 #[path = "cluster_log.rs"]
 mod cluster_log;
 #[path = "cluster_yolo.rs"]
@@ -25,46 +27,6 @@ const DEFAULT_YOLO_TIMEOUT: Duration = Duration::from_secs(60);
 /// `--yolo` flags for the claude family, before its `--settings` JSON.
 const CLAUDE_YOLO_ARGS: [&str; 3] = ["--permission-mode", "bypassPermissions", "--settings"];
 const CODEX_YOLO_ARGS: [&str; 2] = ["--ask-for-approval", "never"];
-/// `--help` box for the options before the first agent.
-const OPTIONS_HELP: &str = "\
-+-- Auto exit and background (OPTIONS go before <AGENT_CLI>) ----------------+
-| --exit-when-done  Close this cluster's agent panes after every agent has   |
-|                   stayed idle for --idle-exit. Prints one line, exits 0.   |
-| --timeout <D>     Stop the cluster after D even if agents still work.      |
-|                   Prints \"timed out\" and exits 124. Default: 2h.           |
-| --idle-exit <D>   How long every agent must stay idle. Default: 5m.        |
-|                   Counting starts after an agent has worked once.          |
-| --background      Open no windows: run every agent in the background and   |
-|                   return at once. Implies --exit-when-done; needs a        |
-|                   prompt. On timeout it writes                             |
-|                   ./easy-herdr-cluster-<time>-<pid>.log                    |
-|                                                                            |
-| D is a whole number followed by s, m or h, for example 30s, 90m or 2h.     |
-| --timeout -1 means the cluster never times out.                            |
-| --timeout and --idle-exit need --exit-when-done or --background.           |
-| Without these options, cluster behaves as before.                          |
-+----------------------------------------------------------------------------+";
-/// `--help` box for `--yolo`, shown after `OPTIONS_HELP`.
-const YOLO_HELP: &str = "\
-+-- Unattended answers (OPTIONS go before <AGENT_CLI>) ----------------------+
-| --yolo             Let the first agent run without approval stops.         |
-|                    claude*: bypassPermissions, and questions continue on   |
-|                    their own after --yolo-timeout, rounded up to 60s or    |
-|                    5m, at most 10m (askUserQuestionTimeout).               |
-|                    codex*: --ask-for-approval never; sandbox unchanged.    |
-|                    Other agents get no extra flags.                        |
-|                    claude* means claude, or a name that starts with        |
-|                    claude- or claude_; codex* works the same way.          |
-|                    A known dialog still open after --yolo-timeout gets     |
-|                    its default key. Unknown dialogs are only logged.       |
-| --yolo-timeout <D> Wait this long before answering. Default: 60s.          |
-|                    0 answers at once. Needs --yolo.                        |
-|                                                                            |
-| Only the first agent gets --yolo. Agents may run commands without asking:  |
-| use a sandbox or a separate checkout.                                      |
-| Claude's folder-trust dialog is not answered; use a folder Claude trusts.  |
-+----------------------------------------------------------------------------+";
-
 #[derive(Debug, PartialEq, Eq)]
 enum ClusterCommand {
     Help,
@@ -81,6 +43,14 @@ enum ClusterCommand {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum YoloMode {
+    /// `--yolo`: agent flags plus the watcher.
+    Agent,
+    /// `--yolo-herdr`: the watcher only.
+    Herdr,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct ClusterOptions {
     /// Set by `--exit-when-done` and implied by `--background`.
@@ -89,8 +59,8 @@ struct ClusterOptions {
     /// `None` when `--timeout -1` removed the deadline.
     timeout: Option<Duration>,
     idle_exit: Duration,
-    /// Set by `--yolo`: the first agent runs without approval stops.
-    yolo: bool,
+    /// How the first agent's dialogs are answered.
+    yolo: Option<YoloMode>,
     /// How long a blocked first agent waits before it is answered; zero answers at once.
     yolo_timeout: Duration,
 }
@@ -102,7 +72,7 @@ impl Default for ClusterOptions {
             background: false,
             timeout: Some(DEFAULT_TIMEOUT),
             idle_exit: DEFAULT_IDLE_EXIT,
-            yolo: false,
+            yolo: None,
             yolo_timeout: DEFAULT_YOLO_TIMEOUT,
         }
     }
@@ -189,7 +159,7 @@ fn parse_cluster_options(args: &[String]) -> Result<(ClusterOptions, &[String]),
     let mut background = false;
     let mut timeout: Option<Option<Duration>> = None;
     let mut idle_exit: Option<Duration> = None;
-    let mut yolo = false;
+    let mut yolo = None;
     let mut yolo_timeout: Option<Duration> = None;
     let mut index = 0;
     while let Some(flag) = args
@@ -199,7 +169,17 @@ fn parse_cluster_options(args: &[String]) -> Result<(ClusterOptions, &[String]),
         let is_repeated = match flag.as_str() {
             "--exit-when-done" => std::mem::replace(&mut exit_when_done, true),
             "--background" => std::mem::replace(&mut background, true),
-            "--yolo" => std::mem::replace(&mut yolo, true),
+            "--yolo" | "--yolo-herdr" => {
+                let mode = if flag == "--yolo" {
+                    YoloMode::Agent
+                } else {
+                    YoloMode::Herdr
+                };
+                if yolo.is_some_and(|previous| previous != mode) {
+                    return Err("--yolo and --yolo-herdr cannot be used together".into());
+                }
+                yolo.replace(mode).is_some()
+            }
             "--timeout" | "--idle-exit" | "--yolo-timeout" => {
                 index += 1;
                 let text = args
@@ -226,8 +206,8 @@ fn parse_cluster_options(args: &[String]) -> Result<(ClusterOptions, &[String]),
             return Err(format!("{flag} requires --exit-when-done or --background"));
         }
     }
-    if yolo_timeout.is_some() && !yolo {
-        return Err("--yolo-timeout requires --yolo".into());
+    if yolo_timeout.is_some() && yolo.is_none() {
+        return Err("--yolo-timeout requires --yolo or --yolo-herdr".into());
     }
     let options = ClusterOptions {
         exit_when_done: exit_when_done || background,
@@ -305,7 +285,7 @@ pub(super) fn run(args: &[String]) -> i32 {
     let (agents, prompt, options, is_supervisor) =
         match parse_cluster_args(args, super::shortcut::get_is_available) {
             Ok(ClusterCommand::Help) => {
-                print_help();
+                cluster_help::print_help();
                 return 0;
             }
             Ok(ClusterCommand::Launch {
@@ -358,7 +338,7 @@ pub(super) fn run(args: &[String]) -> i32 {
     let leader = LeaderConfig {
         group,
         prompt,
-        yolo: options.yolo.then_some(options.yolo_timeout),
+        yolo: options.yolo.map(|mode| (mode, options.yolo_timeout)),
         watch: ready_dir.clone().map(|ready_dir| {
             let config = WatchConfig {
                 ready_dir,
@@ -445,7 +425,7 @@ fn get_tab_argv(
 /// The first agent's argv in this terminal; `--yolo` adds its family's flags.
 fn get_leader_argv(agent: &str, options: &ClusterOptions) -> Vec<String> {
     let mut argv = vec![agent.to_owned()];
-    if options.yolo {
+    if options.yolo == Some(YoloMode::Agent) {
         argv.extend(get_yolo_args(agent, options.yolo_timeout));
     }
     argv
@@ -523,8 +503,8 @@ type StartedCallback = Box<dyn FnOnce(&PassthroughStarted)>;
 pub(super) struct LeaderConfig {
     pub(super) group: u32,
     prompt: Option<String>,
-    /// Set with `--yolo`: how long a blocked leader waits before it is answered.
-    yolo: Option<Duration>,
+    /// The answer mode and how long a blocked leader waits.
+    yolo: Option<(YoloMode, Duration)>,
     /// Set with `--exit-when-done`: the supervisor stores its outcome in the slot.
     watch: Option<(WatchConfig, OutcomeSlot)>,
 }
@@ -549,8 +529,8 @@ pub(super) fn get_started_callback(
                 if let Some(prompt) = prompt {
                     spawn_prompt(started.pane_id.clone(), prompt);
                 }
-                if let Some(grace) = yolo {
-                    cluster_yolo::spawn_watch(started.pane_id.clone(), grace, stop.clone());
+                if let Some((mode, grace)) = yolo {
+                    cluster_yolo::spawn_watch(started.pane_id.clone(), mode, grace, stop.clone());
                 }
                 if let Some((config, outcome)) = watch {
                     let config = WatchConfig {
@@ -614,43 +594,6 @@ fn get_executable_path(exe: std::io::Result<std::path::PathBuf>) -> Result<Strin
     exe.into_os_string()
         .into_string()
         .map_err(|_| "the herdr executable path is not valid UTF-8".into())
-}
-
-fn print_help() {
-    println!("usage: easy-herdr cluster [OPTIONS] <AGENT_CLI>... [prompt]");
-    println!("       easy-herdr cluster [OPTIONS] <AGENT_CLI>... -- <prompt words...>");
-    println!();
-    println!("Run one or more agents in the same canonical directory and switch session.");
-    println!("The first agent runs in this terminal; each other agent opens in a new tab");
-    println!("when supported (Konsole, kitty, WezTerm, GNOME Terminal, iTerm2), otherwise");
-    println!("in a new window. A nonblank HERDR_SWITCH_TERMINAL forces the window command.");
-    println!(
-        "kitty tabs require remote control with a listen socket (listen_on / KITTY_LISTEN_ON)."
-    );
-    println!();
-    println!("Agent names use ASCII letters, digits, ., _, + and -, and cannot start with -.");
-    println!("A final argument outside that set is the prompt unless it starts with -.");
-    println!("Plain names are agents; put a one-word prompt after --.");
-    println!("Agent options are not accepted. Prompts cannot be empty or whitespace-only.");
-    println!("The prompt is typed into the first agent after it is detected idle or done,");
-    println!("never passed in argv. Readiness is checked every 250 ms for up to 120 seconds.");
-    println!("Answer any startup approval dialogs yourself while cluster waits.");
-    println!();
-    println!("{OPTIONS_HELP}");
-    println!();
-    println!("{YOLO_HELP}");
-    println!();
-    println!("Examples:");
-    println!(r#"  easy-herdr cluster claude codex -- "fix the bug""#);
-    println!(r#"  easy-herdr cluster --exit-when-done --timeout 3h claude codex -- "fix the bug""#);
-    println!(
-        r#"  easy-herdr cluster --background --timeout 4h --idle-exit 10m claude codex -- "fix the bug""#
-    );
-    println!(r#"  easy-herdr cluster --exit-when-done --timeout -1 claude codex -- "fix the bug""#);
-    println!(r#"  easy-herdr cluster --yolo claude codex -- "fix the bug""#);
-    println!(
-        r#"  easy-herdr cluster --background --timeout 4h --yolo --yolo-timeout 30s claude codex -- "fix the bug""#
-    );
 }
 
 fn spawn_prompt(pane_id: String, prompt: String) {

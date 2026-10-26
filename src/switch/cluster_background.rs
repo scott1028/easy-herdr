@@ -11,7 +11,7 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 
 use super::cluster_log::{self, LogInfo};
 use super::cluster_watch::{EndReason, WatchConfig};
-use super::{format_duration, format_yolo_timeout, ClusterOptions};
+use super::{format_duration, format_yolo_timeout, ClusterOptions, YoloMode};
 use crate::switch::{ensure_server, report_error};
 
 const PTY_SIZE: PtySize = PtySize {
@@ -102,9 +102,13 @@ pub(super) fn get_supervisor_argv(agents: &[String], options: &ClusterOptions) -
         "--idle-exit".into(),
         format_duration(options.idle_exit),
     ]);
-    if options.yolo {
+    if let Some(mode) = options.yolo {
         argv.extend([
-            "--yolo".into(),
+            match mode {
+                YoloMode::Agent => "--yolo",
+                YoloMode::Herdr => "--yolo-herdr",
+            }
+            .into(),
             "--yolo-timeout".into(),
             format_yolo_timeout(options.yolo_timeout),
         ]);
@@ -186,7 +190,7 @@ pub(super) fn supervise(
     spawn_leader_work_when_ready(
         ready_dir.join("0.ready"),
         prompt.clone(),
-        options.yolo.then_some(options.yolo_timeout),
+        options.yolo.map(|mode| (mode, options.yolo_timeout)),
         is_stopped.clone(),
     );
     let config = WatchConfig {
@@ -253,7 +257,7 @@ pub(super) fn get_member_argv(
         exe,
         group,
         Some(&ready_file),
-        (options.yolo && index == 0).then_some(options.yolo_timeout),
+        (options.yolo == Some(YoloMode::Agent) && index == 0).then_some(options.yolo_timeout),
         agent,
     )
 }
@@ -317,7 +321,7 @@ fn spawn_member(argv: &[String], cwd: &Path) -> Result<PtyMember, String> {
 fn spawn_leader_work_when_ready(
     ready_file: PathBuf,
     prompt: String,
-    yolo: Option<Duration>,
+    yolo: Option<(YoloMode, Duration)>,
     stop: Arc<AtomicBool>,
 ) {
     if let Err(err) = crate::thread_spawn::spawn_named("herdr-cluster-ready", move || {
@@ -325,8 +329,8 @@ fn spawn_leader_work_when_ready(
         while Instant::now() < deadline {
             if let Ok(pane_id) = std::fs::read_to_string(&ready_file) {
                 let pane_id = pane_id.trim().to_owned();
-                if let Some(grace) = yolo {
-                    super::cluster_yolo::spawn_watch(pane_id.clone(), grace, stop);
+                if let Some((mode, grace)) = yolo {
+                    super::cluster_yolo::spawn_watch(pane_id.clone(), mode, grace, stop);
                 }
                 super::spawn_prompt(pane_id, prompt);
                 return;

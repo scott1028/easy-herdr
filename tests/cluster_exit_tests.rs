@@ -605,19 +605,37 @@ fn background_cluster_allows_a_read_only_cwd_without_a_timeout() {
     assert!(fixture.timeout_logs().is_empty());
 }
 
-/// Runs a background cluster of two family agents, with `--yolo --yolo-timeout <D>` when
-/// given, then checks each agent's argv and that only `--yolo` starts one watch, on the
-/// first agent's pane.
-fn check_background_yolo(yolo_timeout: Option<&str>, agents: [&str; 2], leader_args: &str) {
+/// Checks each mode's agent argv and the single supervisor-owned leader watch.
+fn check_background_yolo(yolo_timeout: Option<(&str, &str)>, agents: [&str; 2], leader_args: &str) {
     let fixture = Fixture::new("stuck");
     let yolo = yolo_timeout.is_some();
     let flags = match yolo_timeout {
-        Some(yolo_timeout) => vec!["--yolo", "--yolo-timeout", yolo_timeout],
+        Some((flag, timeout)) => vec![flag, "--yolo-timeout", timeout],
         None => Vec::new(),
     };
     let args = [&["--timeout", "3s"][..], &flags, &agents, &["--", "go"]].concat();
     let supervisor = launch_background(&fixture, &args);
     let leader = fixture.ready_pane(0);
+    if let Some((flag, _)) = yolo_timeout {
+        let supervisor_argv = fs::read(format!("/proc/{supervisor}/cmdline")).unwrap();
+        let supervisor_argv = String::from_utf8(supervisor_argv).unwrap();
+        assert!(supervisor_argv.split('\0').any(|arg| arg == flag));
+        if flag == "--yolo-herdr" {
+            let switches = fixture
+                .herdr_pids()
+                .into_iter()
+                .filter_map(|pid| {
+                    let argv = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+                    let argv = String::from_utf8(argv).ok()?;
+                    (argv.split('\0').nth(1) == Some("switch")).then_some(argv)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(switches.len(), agents.len(), "{switches:?}");
+            assert!(switches
+                .iter()
+                .all(|argv| !argv.split('\0').any(|arg| arg == "--cluster-yolo")));
+        }
+    }
     fixture.assert_all_gone(&[supervisor]);
     let mut launches = fixture
         .agent_file("args")
@@ -634,6 +652,14 @@ fn check_background_yolo(yolo_timeout: Option<&str>, agents: [&str; 2], leader_a
         .filter(|line| line.contains("cluster yolo watch started"))
         .collect::<Vec<_>>();
     assert_eq!(started.len(), usize::from(yolo), "{log}");
+    if let Some((flag, _)) = yolo_timeout {
+        let mode = if flag == "--yolo-herdr" {
+            "herdr"
+        } else {
+            "agent"
+        };
+        assert!(started[0].contains(&format!("mode=\"{mode}\"")), "{log}");
+    }
     let leader_field = format!("pane={leader}");
     assert!(
         started
@@ -652,17 +678,29 @@ fn check_background_yolo(yolo_timeout: Option<&str>, agents: [&str; 2], leader_a
 
 #[test]
 fn background_yolo_adds_codex_flags_to_the_first_agent_only() {
-    check_background_yolo(Some("0"), ["codex-x", "claude-x"], CODEX_YOLO_ARGS);
+    check_background_yolo(
+        Some(("--yolo", "0")),
+        ["codex-x", "claude-x"],
+        CODEX_YOLO_ARGS,
+    );
 }
 
 #[test]
 fn background_yolo_adds_claude_flags_to_the_first_agent_only() {
-    check_background_yolo(Some("0"), ["claude-x", "codex-x"], CLAUDE_YOLO_ARGS);
+    check_background_yolo(
+        Some(("--yolo", "0")),
+        ["claude-x", "codex-x"],
+        CLAUDE_YOLO_ARGS,
+    );
 }
 
 #[test]
 fn background_yolo_rounds_the_claude_question_timeout_up() {
-    check_background_yolo(Some("2m"), ["claude-x", "codex-x"], CLAUDE_YOLO_5M_ARGS);
+    check_background_yolo(
+        Some(("--yolo", "2m")),
+        ["claude-x", "codex-x"],
+        CLAUDE_YOLO_5M_ARGS,
+    );
 }
 
 #[test]
@@ -672,22 +710,22 @@ fn background_cluster_without_yolo_adds_no_flags_and_no_watch() {
 
 /// Runs a foreground cluster whose member tab only records its argv, then checks the
 /// leader's argv, the tab's argv and whether the leader's client started a watch.
-fn check_foreground_yolo(yolo: bool) {
+fn check_foreground_yolo(yolo: Option<&str>) {
     let fixture = Fixture::new("stuck");
-    let flags: &[&str] = if yolo {
-        &["--yolo", "--yolo-timeout", "0"]
-    } else {
-        &[]
-    };
+    let flags = yolo.map_or_else(Vec::new, |flag| vec![flag, "--yolo-timeout", "0"]);
     let args = [
         &["--exit-when-done", "--timeout", "3s"][..],
-        flags,
+        &flags,
         &["claude-x", "codex-x", "--", "go"],
     ]
     .concat();
     let (code, output) = fixture.cluster_in_pty(&args, Duration::from_secs(40));
     assert_eq!(code, 124, "{output}\n{}", fixture.diagnostics());
-    let leader_args = if yolo { CLAUDE_YOLO_ARGS } else { "" };
+    let leader_args = if yolo == Some("--yolo") {
+        CLAUDE_YOLO_ARGS
+    } else {
+        ""
+    };
     assert_eq!(
         fixture.agent_file("args"),
         format!("claude-x{leader_args}\n"),
@@ -704,7 +742,7 @@ fn check_foreground_yolo(yolo: bool) {
     let log = fixture.log("herdr-client.log");
     assert_eq!(
         log.matches("cluster yolo watch started").count(),
-        usize::from(yolo),
+        usize::from(yolo.is_some()),
         "{log}"
     );
     assert!(!log.contains("cluster yolo sent keys"), "{log}");
@@ -713,10 +751,25 @@ fn check_foreground_yolo(yolo: bool) {
 
 #[test]
 fn foreground_yolo_adds_claude_flags_to_the_leader_but_not_its_member_tab() {
-    check_foreground_yolo(true);
+    check_foreground_yolo(Some("--yolo"));
 }
 
 #[test]
 fn foreground_cluster_without_yolo_adds_no_flags_and_no_watch() {
-    check_foreground_yolo(false);
+    check_foreground_yolo(None);
+}
+
+#[test]
+fn background_yolo_herdr_adds_no_flags_to_claude_or_codex() {
+    check_background_yolo(Some(("--yolo-herdr", "0")), ["claude-x", "codex-x"], "");
+}
+
+#[test]
+fn background_yolo_herdr_adds_no_flags_with_a_codex_leader() {
+    check_background_yolo(Some(("--yolo-herdr", "0")), ["codex-x", "claude-x"], "");
+}
+
+#[test]
+fn foreground_yolo_herdr_adds_no_flags_and_starts_one_watch() {
+    check_foreground_yolo(Some("--yolo-herdr"));
 }

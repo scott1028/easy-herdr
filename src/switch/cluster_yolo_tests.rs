@@ -24,6 +24,7 @@ enum StopAt {
     Never,
     AgentGet,
     AgentExplain,
+    AgentRead,
 }
 
 struct Run {
@@ -61,6 +62,18 @@ fn run_watch_with(
     stop_at: StopAt,
     leader: impl Fn(u64, usize) -> Leader,
 ) -> Run {
+    run_watch_dialog(YoloMode::Agent, grace, stop_at, leader, |_, _| {
+        (kind.into(), rule.into(), screen.into())
+    })
+}
+
+fn run_watch_dialog(
+    mode: YoloMode,
+    grace: u64,
+    stop_at: StopAt,
+    leader: impl Fn(u64, usize) -> Leader,
+    dialog: impl Fn(u64, usize) -> (String, String, String),
+) -> Run {
     let start = Instant::now();
     let clock = Cell::new(start);
     let elapsed = || clock.get().duration_since(start).as_secs();
@@ -70,9 +83,12 @@ fn run_watch_with(
     let presses = RefCell::new(Vec::new());
     let end = watch(
         "w1:p1",
+        mode,
         Duration::from_secs(grace),
         |method| {
-            let state = leader(elapsed(), presses.borrow().len());
+            let count = presses.borrow().len();
+            let state = leader(elapsed(), count);
+            let (kind, rule, screen) = dialog(elapsed(), count);
             match method {
                 Method::AgentGet(target) => {
                     assert_eq!(target.target, "w1:p1");
@@ -113,6 +129,7 @@ fn run_watch_with(
                     assert_eq!(params.target, "w1:p1");
                     assert_eq!(params.source, ReadSource::Detection);
                     reads.borrow_mut().push(elapsed());
+                    stop.set(stop.get() || stop_at == StopAt::AgentRead);
                     Ok(ResponseResult::PaneRead {
                         read: PaneReadResult {
                             pane_id: "w1:p1".into(),
@@ -120,7 +137,7 @@ fn run_watch_with(
                             tab_id: "w1:t1".into(),
                             source: ReadSource::Detection,
                             format: ReadFormat::Text,
-                            text: screen.into(),
+                            text: screen,
                             revision: 1,
                             truncated: false,
                         },
@@ -166,7 +183,11 @@ fn yolo_waits_out_the_grace_period_then_answers_a_known_dialog() {
     ] {
         let run = run_watch(60, kind, rule, answered_by_one_press);
         // Polls run every 2 s, so the poll at 60 s is the first one past the grace period.
-        assert_eq!(run.explains, [60], "{kind} {rule}");
+        assert_eq!(
+            run.explains,
+            (0..=60).step_by(2).collect::<Vec<_>>(),
+            "{kind} {rule}"
+        );
         assert_eq!(run.presses, [60], "{kind} {rule}");
         assert_eq!(run.end, WatchEnd::LeaderGone);
     }
@@ -186,7 +207,8 @@ fn yolo_leaves_a_dialog_a_human_answers_within_the_grace_period() {
         30..100 => Leader::Status(Idle),
         _ => Leader::Gone,
     });
-    assert!(run.explains.is_empty() && run.presses.is_empty());
+    assert_eq!(run.explains, (0..30).step_by(2).collect::<Vec<_>>());
+    assert!(run.presses.is_empty());
     assert_eq!(run.end, WatchEnd::LeaderGone);
 }
 
@@ -204,8 +226,12 @@ fn yolo_never_presses_keys_on_unknown_dialogs_or_claude_question_forms() {
             ..20 => Leader::Status(Blocked),
             _ => Leader::Gone,
         });
-        // Explained once per episode, then left alone.
-        assert_eq!(run.explains, [0], "{kind} {rule}");
+        // Still inspected each poll so a replacement dialog can be recognized.
+        assert_eq!(
+            run.explains,
+            (0..20).step_by(2).collect::<Vec<_>>(),
+            "{kind} {rule}"
+        );
         assert!(run.presses.is_empty(), "{kind} {rule}");
     }
 }
@@ -216,9 +242,9 @@ fn yolo_gives_up_after_two_retries() {
         ..60 => Leader::Status(Blocked),
         _ => Leader::Gone,
     });
-    // Each press is checked again 3 s later; the third check gives up without explaining.
+    // Each press is checked again 3 s later; inspection continues after giving up.
     assert_eq!(run.presses, [0, 3, 6]);
-    assert_eq!(run.explains, [0, 3, 6]);
+    assert!(run.explains.starts_with(&[0, 3, 6, 9]));
     assert_eq!(run.end, WatchEnd::LeaderGone);
 }
 
@@ -271,19 +297,24 @@ fn yolo_presses_a_gated_dialog_only_while_its_gate_text_shows() {
             StopAt::Never,
             answered_by_one_press,
         );
-        // A missing gate finishes the episode after one read.
-        assert_eq!(run.reads, [0], "{screen}");
+        // A missing gate prevents all presses, while inspection continues.
+        assert_eq!(run.reads[0], 0, "{screen}");
+        assert_eq!(run.reads, run.explains, "{screen}");
         assert_eq!(run.presses, presses, "{screen}");
     }
-    // Entries without a gate never read the screen.
+    // Entries without a gate also read the screen to track dialog changes.
     let run = run_watch(0, "claude", "bash_permission_prompt", answered_by_one_press);
-    assert!(run.reads.is_empty());
+    assert_eq!(run.reads, [0]);
     assert_eq!(run.presses, [0]);
 }
 
 #[test]
 fn yolo_sends_no_keys_once_stopped_during_a_reply() {
-    for (stop_at, explains) in [(StopAt::AgentGet, vec![]), (StopAt::AgentExplain, vec![0])] {
+    for (stop_at, explains) in [
+        (StopAt::AgentGet, vec![]),
+        (StopAt::AgentExplain, vec![0]),
+        (StopAt::AgentRead, vec![0]),
+    ] {
         let run = run_watch_with(
             0,
             "codex",
@@ -294,7 +325,8 @@ fn yolo_sends_no_keys_once_stopped_during_a_reply() {
         );
         assert_eq!(run.end, WatchEnd::Stopped);
         assert_eq!(run.explains, explains);
-        assert!(run.reads.is_empty() && run.presses.is_empty());
+        assert_eq!(run.reads.len(), usize::from(stop_at == StopAt::AgentRead));
+        assert!(run.presses.is_empty());
     }
 }
 
@@ -313,6 +345,245 @@ fn yolo_starts_a_new_episode_after_the_agent_was_undetected() {
     );
     // Blocked at 0 s and 2 s, undetected at 4 s and 6 s, blocked again from 8 s:
     // the new block waits its own 10 s instead of answering at 10 s.
-    assert_eq!(run.explains, [18]);
+    assert_eq!(run.explains, [0, 2, 8, 10, 12, 14, 16, 18]);
     assert_eq!(run.presses, [18]);
+}
+
+#[test]
+fn yolo_unknown_then_known_dialog_waits_its_own_grace() {
+    for mode in [YoloMode::Agent, YoloMode::Herdr] {
+        let run = run_watch_dialog(
+            mode,
+            4,
+            StopAt::Never,
+            |t, presses| {
+                if presses == 0 && t < 40 {
+                    Leader::Status(Blocked)
+                } else {
+                    Leader::Gone
+                }
+            },
+            |t, _| {
+                (
+                    "claude".into(),
+                    if t < 6 {
+                        "unknown"
+                    } else {
+                        "bash_permission_prompt"
+                    }
+                    .into(),
+                    "dialog".into(),
+                )
+            },
+        );
+        assert_eq!(run.presses, [10]);
+    }
+}
+
+#[test]
+fn yolo_changed_dialog_resets_attempts_and_grace() {
+    for mode in [YoloMode::Agent, YoloMode::Herdr] {
+        let run = run_watch_dialog(
+            mode,
+            4,
+            StopAt::Never,
+            |t, _| {
+                if t < 32 {
+                    Leader::Status(Blocked)
+                } else {
+                    Leader::Gone
+                }
+            },
+            |_, presses| {
+                (
+                    "claude".into(),
+                    "bash_permission_prompt".into(),
+                    if presses == 0 {
+                        "first".into()
+                    } else {
+                        "second".into()
+                    },
+                )
+            },
+        );
+        assert_eq!(run.presses, [4, 11, 14, 17]);
+        // A replacement during the initial wait also starts a fresh wait.
+        let run = run_watch_dialog(
+            mode,
+            6,
+            StopAt::Never,
+            |t, presses| {
+                if t < 30 && presses == 0 {
+                    Leader::Status(Blocked)
+                } else {
+                    Leader::Gone
+                }
+            },
+            |t, _| {
+                (
+                    "claude".into(),
+                    "bash_permission_prompt".into(),
+                    if t < 4 {
+                        "first".into()
+                    } else {
+                        "second".into()
+                    },
+                )
+            },
+        );
+        assert_eq!(run.presses, [10]);
+    }
+}
+
+#[test]
+fn yolo_timers_and_braille_spinners_do_not_reset_the_dialog() {
+    for mode in [YoloMode::Agent, YoloMode::Herdr] {
+        let run = run_watch_dialog(
+            mode,
+            4,
+            StopAt::Never,
+            |t, _| {
+                if t < 40 {
+                    Leader::Status(Blocked)
+                } else {
+                    Leader::Gone
+                }
+            },
+            |t, _| {
+                (
+                    "claude".into(),
+                    "bash_permission_prompt".into(),
+                    format!(
+                        "Waiting {} {}",
+                        100 - t,
+                        char::from_u32(0x2800 + t as u32).unwrap()
+                    ),
+                )
+            },
+        );
+        assert_eq!(run.presses, [4, 7, 10]);
+    }
+}
+
+#[test]
+fn yolo_caps_changing_dialogs_and_resets_after_a_nonblocked_poll() {
+    for mode in [YoloMode::Agent, YoloMode::Herdr] {
+        let output = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = super::super::tests::LogWriter(output.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let run = tracing::subscriber::with_default(subscriber, || {
+            run_watch_dialog(
+                mode,
+                0,
+                StopAt::Never,
+                |t, _| match t {
+                    40..44 => Leader::Status(Idle),
+                    90.. => Leader::Gone,
+                    _ => Leader::Status(Blocked),
+                },
+                |t, presses| {
+                    (
+                        "claude".into(),
+                        "bash_permission_prompt".into(),
+                        // Letters ensure each press changes identity after normalization.
+                        format!(
+                            "dialog {} {}",
+                            (b'a' + presses as u8) as char,
+                            if t >= 44 { "new" } else { "old" }
+                        ),
+                    )
+                },
+            )
+        });
+        assert_eq!(run.presses.len(), 2 * MAX_PRESSES);
+        assert!(run.presses[..MAX_PRESSES].iter().all(|t| *t < 40));
+        assert!(run.presses[MAX_PRESSES..].iter().all(|t| *t >= 44));
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert_eq!(logs.matches("result=\"press_limit\"").count(), 2, "{logs}");
+    }
+}
+
+#[test]
+fn herdr_answers_each_question_and_review_after_its_own_grace() {
+    let run = run_watch_dialog(
+        YoloMode::Herdr,
+        4,
+        StopAt::Never,
+        |_, presses| {
+            if presses < 4 {
+                Leader::Status(Blocked)
+            } else {
+                Leader::Gone
+            }
+        },
+        |_, presses| {
+            (
+                "claude".into(),
+                if presses < 3 {
+                    "live_blocked_form"
+                } else {
+                    "legacy_no_prompt_blocker"
+                }
+                .into(),
+                if presses < 3 {
+                    format!(
+                        "Question {} Enter to select",
+                        (b'a' + presses as u8) as char
+                    )
+                } else {
+                    "Review your answers".into()
+                },
+            )
+        },
+    );
+    assert_eq!(run.presses, [4, 11, 18, 25]);
+}
+
+#[test]
+fn herdr_question_gates_reject_command_approvals_and_edit_prompts() {
+    for (kind, rule, screen) in [
+        ("codex", "live_strong_blocker", "Allow command?"),
+        (
+            "claude",
+            "legacy_no_prompt_blocker",
+            "Do you want to edit this file?",
+        ),
+    ] {
+        let run = run_watch_dialog(
+            YoloMode::Herdr,
+            0,
+            StopAt::Never,
+            |t, _| {
+                if t < 20 {
+                    Leader::Status(Blocked)
+                } else {
+                    Leader::Gone
+                }
+            },
+            |_, _| (kind.into(), rule.into(), screen.into()),
+        );
+        assert!(run.presses.is_empty());
+    }
+    for (kind, rule, screen) in [
+        (
+            "claude",
+            "live_blocked_form_named_session",
+            "ENTER TO SELECT",
+        ),
+        ("codex", "live_strong_blocker", "Enter to submit answer"),
+        ("codex", "live_strong_blocker", "Enter to submit all"),
+    ] {
+        let run = run_watch_dialog(
+            YoloMode::Herdr,
+            0,
+            StopAt::Never,
+            answered_by_one_press,
+            |_, _| (kind.into(), rule.into(), screen.into()),
+        );
+        assert_eq!(run.presses, [0]);
+    }
 }

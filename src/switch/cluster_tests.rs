@@ -381,46 +381,58 @@ fn cluster_durations_format_with_the_largest_exact_unit() {
 }
 
 #[test]
-fn cluster_options_help_box_lines_share_one_width_within_80_columns() {
-    let width = OPTIONS_HELP.lines().next().unwrap().chars().count();
-    for help in [OPTIONS_HELP, YOLO_HELP] {
-        let lines = help.lines().collect::<Vec<_>>();
-        assert!(lines.len() > 2 && width <= 80, "{lines:?}");
-        for (index, line) in lines.iter().enumerate() {
-            assert_eq!(line.chars().count(), width, "{line:?}");
-            let edge = if index == 0 || index + 1 == lines.len() {
-                '+'
-            } else {
-                '|'
+fn cluster_yolo_herdr_parses_without_adding_agent_flags() {
+    for flags in [
+        vec!["--yolo-herdr"],
+        vec!["--yolo-herdr", "--yolo-timeout", "0"],
+        vec!["--yolo-timeout", "2m", "--yolo-herdr"],
+    ] {
+        for agent in ["claude", "claude-personal", "codex", "codex-personal"] {
+            let args = strings(&[flags.as_slice(), &[agent]].concat());
+            let parsed = parse_cluster_args(&args, |_| true);
+            assert!(parsed.is_ok(), "{parsed:?}");
+            let ClusterCommand::Launch { options, .. } = parsed.unwrap() else {
+                panic!("expected launch");
             };
-            assert!(line.starts_with(edge) && line.ends_with(edge), "{line:?}");
+            assert_eq!(options.yolo, Some(YoloMode::Herdr));
+            assert_eq!(
+                options.yolo_timeout.as_secs(),
+                match flags.as_slice() {
+                    ["--yolo-herdr"] => 60,
+                    ["--yolo-herdr", "--yolo-timeout", "0"] => 0,
+                    _ => 120,
+                }
+            );
+            assert_eq!(get_leader_argv(agent, &options), strings(&[agent]));
+            let expected_timeout = options.yolo_timeout;
+            let supervisor = cluster_background::get_supervisor_argv(
+                &strings(&[agent]),
+                &ClusterOptions {
+                    background: true,
+                    exit_when_done: true,
+                    ..options
+                },
+            );
+            let Ok(ClusterCommand::Supervise { options, .. }) =
+                parse_cluster_args(&supervisor[1..], |_| true)
+            else {
+                panic!("expected supervisor: {supervisor:?}");
+            };
+            assert_eq!(options.yolo, Some(YoloMode::Herdr));
+            assert_eq!(options.yolo_timeout, expected_timeout);
+            for index in 0..2 {
+                let argv = cluster_background::get_member_argv(
+                    "/bin/easy-herdr",
+                    123,
+                    Path::new("/d"),
+                    index,
+                    agent,
+                    &options,
+                );
+                assert!(!argv.iter().any(|arg| arg == "--cluster-yolo"), "{argv:?}");
+            }
         }
     }
-    for flag in [
-        "--exit-when-done",
-        "--timeout <D>",
-        "--timeout -1",
-        "--idle-exit <D>",
-        "--background",
-    ] {
-        assert!(OPTIONS_HELP.contains(flag), "missing {flag}");
-    }
-    for phrase in [
-        "--yolo ",
-        "--yolo-timeout <D>",
-        "Default: 60s",
-        "bypassPermissions",
-        "askUserQuestionTimeout",
-        "rounded up to 60s or",
-        "5m, at most 10m",
-        "--ask-for-approval never",
-        "Only the first agent gets --yolo",
-        "folder-trust dialog is not answered",
-    ] {
-        assert!(YOLO_HELP.contains(phrase), "missing {phrase}");
-    }
-    assert!(!OPTIONS_HELP.contains("--yolo"));
-    assert!(!YOLO_HELP.contains("--cluster-yolo"));
 }
 
 #[test]
@@ -454,7 +466,7 @@ fn cluster_yolo_is_off_by_default_and_parses_its_timeout() {
         };
         assert_eq!(parsed_agents, agents, "{args:?}");
         assert_eq!(prompt.as_deref(), Some("fix"), "{args:?}");
-        assert_eq!(options.yolo, yolo, "{args:?}");
+        assert_eq!(options.yolo, yolo.then_some(YoloMode::Agent), "{args:?}");
         assert_eq!(
             options.yolo_timeout,
             Duration::from_secs(yolo_timeout),
@@ -468,13 +480,25 @@ fn cluster_rejects_invalid_yolo_options_with_exit_two() {
     for (args, error) in [
         (
             vec!["--yolo-timeout", "5s", "claude", "--", "hi"],
-            "--yolo-timeout requires --yolo",
+            "--yolo-timeout requires --yolo or --yolo-herdr",
         ),
         (
             vec!["--exit-when-done", "--yolo-timeout", "0", "claude"],
-            "--yolo-timeout requires --yolo",
+            "--yolo-timeout requires --yolo or --yolo-herdr",
         ),
         (vec!["--yolo", "--yolo", "claude"], "--yolo given twice"),
+        (
+            vec!["--yolo-herdr", "--yolo-herdr", "claude"],
+            "--yolo-herdr given twice",
+        ),
+        (
+            vec!["--yolo", "--yolo-herdr", "claude"],
+            "--yolo and --yolo-herdr cannot be used together",
+        ),
+        (
+            vec!["--yolo-herdr", "--yolo", "claude"],
+            "--yolo and --yolo-herdr cannot be used together",
+        ),
         (
             vec!["--yolo", "--yolo", "5s", "claude"],
             "--yolo given twice",
@@ -681,7 +705,7 @@ fn cluster_yolo_adds_family_flags_to_the_foreground_leader_only_when_on() {
     let codex: &[&str] = &CODEX_YOLO_FLAGS;
     let none: &[&str] = &[];
     let on = ClusterOptions {
-        yolo: true,
+        yolo: Some(YoloMode::Agent),
         ..ClusterOptions::default()
     };
     let off = ClusterOptions::default();
@@ -742,7 +766,7 @@ fn cluster_yolo_timeout_rounds_up_to_a_claude_question_timeout() {
     }
     for (seconds, question_timeout) in [(0, "60s"), (60, "60s"), (120, "5m"), (1800, "10m")] {
         let options = ClusterOptions {
-            yolo: true,
+            yolo: Some(YoloMode::Agent),
             yolo_timeout: Duration::from_secs(seconds),
             ..ClusterOptions::default()
         };
@@ -765,7 +789,7 @@ fn cluster_yolo_timeout_rounds_up_to_a_claude_question_timeout() {
             "{seconds}s"
         );
         let off = ClusterOptions {
-            yolo: false,
+            yolo: None,
             ..options
         };
         assert_eq!(
@@ -834,7 +858,7 @@ fn cluster_background_passes_cluster_yolo_to_the_first_agent_only() {
         let options = ClusterOptions {
             exit_when_done: true,
             background: true,
-            yolo: yolo.is_some(),
+            yolo: yolo.map(|_| YoloMode::Agent),
             yolo_timeout: Duration::from_secs(yolo.map_or(60, |(seconds, _)| seconds)),
             ..ClusterOptions::default()
         };
@@ -890,8 +914,10 @@ fn cluster_leader_starts_the_yolo_watch_only_with_yolo() {
     };
     // Without a prompt, a supervisor or --yolo, the leader starts nothing.
     assert!(get_started_callback(&leader(None), &stop).is_none());
-    for grace in [Duration::ZERO, DEFAULT_YOLO_TIMEOUT] {
-        assert!(get_started_callback(&leader(Some(grace)), &stop).is_some());
+    for mode in [YoloMode::Agent, YoloMode::Herdr] {
+        for grace in [Duration::ZERO, DEFAULT_YOLO_TIMEOUT] {
+            assert!(get_started_callback(&leader(Some((mode, grace))), &stop).is_some());
+        }
     }
 }
 
@@ -1025,7 +1051,6 @@ fn cluster_supervisor_gets_the_options_and_agents_but_not_the_prompt_in_argv() {
             "{args:?}"
         );
     }
-    assert!(!OPTIONS_HELP.contains("--supervise"));
 }
 
 #[test]
@@ -1040,7 +1065,7 @@ fn cluster_supervisor_argv_passes_yolo_only_when_on() {
         let options = ClusterOptions {
             exit_when_done: true,
             background: true,
-            yolo,
+            yolo: yolo.then_some(YoloMode::Agent),
             yolo_timeout: Duration::from_secs(yolo_timeout),
             ..ClusterOptions::default()
         };
@@ -1141,7 +1166,7 @@ fn cluster_executable_path_resolves_herdr_switch_symlinks() {
 }
 
 #[derive(Clone)]
-struct LogWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+pub(super) struct LogWriter(pub(super) std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 
 impl std::io::Write for LogWriter {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {

@@ -51,12 +51,12 @@ fn cluster_help_boxes_auto_exit_and_background_options_with_examples() {
     for phrase in [
         "easy-herdr cluster [OPTIONS] <AGENT_CLI>... [prompt]",
         "easy-herdr cluster [OPTIONS] <AGENT_CLI>... -- <prompt words...>",
-        "+-- Auto exit and background (OPTIONS go before <AGENT_CLI>) ----------------+",
+        "╭─ Close on its own: --exit-when-done and --background",
         "--exit-when-done",
         "--timeout <D>",
         "--idle-exit <D>",
         "--background",
-        "Examples:",
+        "Examples\n",
     ] {
         assert!(help.contains(phrase), "missing {phrase}");
     }
@@ -78,19 +78,20 @@ fn cluster_help_boxes_yolo_options_after_the_auto_exit_box() {
             .position(|line| line.contains(text))
             .unwrap_or_else(|| panic!("missing {text}: {help}"))
     };
-    let options_box = find("+-- Auto exit and background");
-    let yolo_box = find("+-- Unattended answers (OPTIONS go before <AGENT_CLI>) ");
-    let examples = find("Examples:");
+    let options_box = find("╭─ Close on its own:");
+    let yolo_box = find("╭─ Run without approval stops: --yolo or --yolo-herdr");
+    let examples = find("Examples");
     assert!(options_box < yolo_box && yolo_box < examples, "{help}");
     // The yolo box follows the auto exit box after one blank line.
     assert!(lines[yolo_box - 1].is_empty(), "{help}");
-    assert!(lines[yolo_box - 2].starts_with("+---"), "{help}");
+    assert!(lines[yolo_box - 2].starts_with("╰───"), "{help}");
     assert!(!lines[options_box..yolo_box]
         .iter()
         .any(|line| line.contains("--yolo")));
     for example in [
         r#"  easy-herdr cluster --yolo claude codex -- "fix the bug""#,
-        r#"  easy-herdr cluster --background --timeout 4h --yolo --yolo-timeout 30s claude codex -- "fix the bug""#,
+        r#"  easy-herdr cluster --yolo-herdr --yolo-timeout 0 claude codex -- "fix the bug""#,
+        "  easy-herdr cluster --background --timeout 4h --yolo --yolo-timeout 30s \\",
     ] {
         assert!(find(example) > examples, "{help}");
     }

@@ -4,14 +4,18 @@
 //! accept the option the dialog highlights by default. An entry with a gate is answered
 //! only while the detection screen shows that text. Rules whose default option is not
 //! a known approve or continue stay out, so their dialogs are only logged:
-//! - claude `live_blocked_form*` and `legacy_no_prompt_blocker` also match question
-//!   forms; Claude answers those itself after `askUserQuestionTimeout`.
+//! - Claude question forms are Herdr-only, gated by their select/review footer.
+//!   Agent mode leaves these to Claude's own `askUserQuestionTimeout`.
+//! - Codex question forms are Herdr-only, gated by their submit-answer footer.
+//!   Command approvals sharing the same rule remain unanswered.
 //! - claude `dynamic_workflow_prompt` and `mcp_elicitation_prompt`: no known default.
 //! - codex `osc_title_blocked` and `weak_blocker` match any dialog.
-//! - codex `live_strong_blocker` also matches question forms and pickers.
 //! - codex `startup_update` may default to "Update now".
 //!
 //! Accepted limits:
+//! - Enter picks the highlighted answer, usually the first.
+//! - A Claude plan approval is answered only with an `enter to select` footer;
+//!   this has not been verified live.
 //! - An agent whose state comes from full lifecycle hook authority, such as opencode
 //!   with the herdr plugin, gets `matched_rule: null` from `agent.explain`, so its
 //!   dialogs are never answered.
@@ -20,12 +24,15 @@
 //! - opencode `permission_required` also matches opencode question dialogs; there
 //!   Enter picks the highlighted, first answer.
 
+use super::YoloMode;
+
 /// How the watcher answers one known dialog.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Answer {
     pub(super) keys: &'static [&'static str],
-    /// Text the detection screen must show right before each press.
-    pub(super) gate: Option<&'static str>,
+    /// Any one must appear on the detection screen before each press, ignoring case.
+    /// Empty means no gate.
+    pub(super) gates: &'static [&'static str],
 }
 
 static ANSWERS: [(&str, &str, Answer); 4] = [
@@ -36,7 +43,7 @@ static ANSWERS: [(&str, &str, Answer); 4] = [
         "bash_permission_prompt",
         Answer {
             keys: &["Enter"],
-            gate: None,
+            gates: &[],
         },
     ),
     // claude.toml: Enter submits the highlighted option. Claude rests on `1. Yes`,
@@ -46,7 +53,7 @@ static ANSWERS: [(&str, &str, Answer); 4] = [
         "generic_permission_prompt",
         Answer {
             keys: &["Enter"],
-            gate: None,
+            gates: &[],
         },
     ),
     // codex.toml: codex 0.164 offers `1. Trust and continue` and `2. Quit`, and Enter
@@ -57,7 +64,7 @@ static ANSWERS: [(&str, &str, Answer); 4] = [
         "trust_directory",
         Answer {
             keys: &["Enter"],
-            gate: Some("› 1. Trust and continue"),
+            gates: &["› 1. Trust and continue"],
         },
     ),
     // opencode.toml: opencode v2.0.3 opens this prompt on `selected: "once"`, "Allow once".
@@ -66,15 +73,57 @@ static ANSWERS: [(&str, &str, Answer); 4] = [
         "permission_required",
         Answer {
             keys: &["Enter"],
-            gate: None,
+            gates: &[],
+        },
+    ),
+];
+
+/// `--yolo-herdr` only: question forms, where Enter picks the highlighted answer.
+static HERDR_ANSWERS: [(&str, &str, Answer); 4] = [
+    // Footer: `Enter to select · ↑/↓ to navigate · Esc to cancel`.
+    // Captured live in the qtimeout E2E and this task's E2E.
+    (
+        "claude",
+        "live_blocked_form",
+        Answer {
+            keys: &["Enter"],
+            gates: &["enter to select"],
+        },
+    ),
+    // claude.toml: the named-session regex matches the same select footer.
+    (
+        "claude",
+        "live_blocked_form_named_session",
+        Answer {
+            keys: &["Enter"],
+            gates: &["enter to select"],
+        },
+    ),
+    // claude.toml: `review your answers` marks the multi-question review; not captured live.
+    (
+        "claude",
+        "legacy_no_prompt_blocker",
+        Answer {
+            keys: &["Enter"],
+            gates: &["review your answers"],
+        },
+    ),
+    // codex.toml: question footers gate Enter, excluding `allow command?`; not captured live.
+    (
+        "codex",
+        "live_strong_blocker",
+        Answer {
+            keys: &["Enter"],
+            gates: &["enter to submit answer", "enter to submit all"],
         },
     ),
 ];
 
 /// How to answer a known dialog, or `None` when it must not be answered.
-pub(super) fn get_answer(kind: &str, rule: &str) -> Option<&'static Answer> {
+pub(super) fn get_answer(kind: &str, rule: &str, mode: YoloMode) -> Option<&'static Answer> {
     ANSWERS
         .iter()
+        .chain(HERDR_ANSWERS.iter().filter(|_| mode == YoloMode::Herdr))
         .find(|(answer_kind, answer_rule, _)| *answer_kind == kind && *answer_rule == rule)
         .map(|(_, _, answer)| answer)
 }
